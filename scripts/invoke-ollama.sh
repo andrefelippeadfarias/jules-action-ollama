@@ -1,6 +1,6 @@
 #!/bin/bash
 # invoke-ollama.sh — Call local Ollama API with prompt and context
-# SECURITY: Uses proper JSON serialization (python3/jq), no string interpolation
+# SECURITY: Uses env vars for Python params (no string injection), proper JSON serialization
 # Usage: ./invoke-ollama.sh --prompt prompt.txt --model glm-5.1:cloud --output response.md
 
 set -euo pipefail
@@ -9,7 +9,7 @@ set -euo pipefail
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 MODEL="${OLLAMA_MODEL:-glm-5.1:cloud}"
 TEMPERATURE="${OLLAMA_TEMPERATURE:-0.3}"
-MAX_TOKENS="${OLLAMA_MAX_TOKENS:-8192}"
+MAX_TOKENS="${OLLAMA_MAX_TOKENS:-16384}"
 PROMPT_FILE=""
 OUTPUT_FILE="ollama_response.md"
 CONTEXT_FILE="context.md"
@@ -50,9 +50,9 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     -not -path './__pycache__/*' -not -path './coverage/*' \
     -not -path './vendor/*' -not -path './.next/*' \
     -not -name '.env' -not -name '.env.*' \
-    -not -name '*.key' -not -name '*.pem' -not -name '*.p12' \
+    -not -name '*.key' -not -name '*.pem' -not -name '*.p12' -not -name '*.jks' \
     -not -name '*secret*' -not -name '*credential*' -not -name '*token*' \
-    -not -name '*password*' -not -name '*.jks' \
+    -not -name '*password*' \
     | head -100 >> "$CONTEXT_FILE"
 
   # Add relevant source files (EXCLUDE sensitive files)
@@ -68,7 +68,9 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     -not -path './vendor/*' -not -path './.next/*' \
     -not -name '*.min.*' -not -name '*.lock' \
     -not -name '.env' -not -name '.env.*' \
-    -not -name '*.key' -not -name '*.pem' \
+    -not -name '*.key' -not -name '*.pem' -not -name '*.p12' -not -name '*.jks' \
+    -not -name '*secret*' -not -name '*credential*' -not -name '*token*' \
+    -not -name '*password*' \
     | sort | head -"$MAX_FILES"); do
     if [[ -f "$f" ]]; then
       size=$(wc -c < "$f" 2>/dev/null || echo 0)
@@ -84,26 +86,28 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
   echo "Included $count source files in context"
 fi
 
-# SECURITY: Use python3 for proper JSON serialization (no string injection)
+# SECURITY: Use env vars for Python params to prevent code injection
 RESPONSE_FILE="${OUTPUT_FILE%.md}_raw.json"
 
-python3 -c "
-import json, sys
+OLLAMA_MODEL="$MODEL" OLLAMA_TEMPERATURE="$TEMPERATURE" OLLAMA_MAX_TOKENS="$MAX_TOKENS" \
+  OLLAMA_URL="$OLLAMA_URL" OLLAMA_CONTEXT="$CONTEXT_FILE" OLLAMA_OUTPUT="$OUTPUT_FILE" OLLAMA_RESPONSE="$RESPONSE_FILE" \
+  python3 -c "
+import json, sys, os
 
-with open('$CONTEXT_FILE', 'r', encoding='utf-8') as f:
+with open(os.environ['OLLAMA_CONTEXT'], 'r', encoding='utf-8') as f:
     prompt = f.read()
 
 payload = {
-    'model': '$MODEL',
+    'model': os.environ.get('OLLAMA_MODEL', 'glm-5.1:cloud'),
     'prompt': prompt,
     'stream': False,
     'options': {
-        'temperature': $TEMPERATURE,
-        'num_predict': $MAX_TOKENS
+        'temperature': float(os.environ.get('OLLAMA_TEMPERATURE', '0.3')),
+        'num_predict': int(os.environ.get('OLLAMA_MAX_TOKENS', '16384'))
     }
 }
 
-with open('${CONTEXT_FILE}.json', 'w', encoding='utf-8') as f:
+with open(os.environ['OLLAMA_CONTEXT'] + '.json', 'w', encoding='utf-8') as f:
     json.dump(payload, f, ensure_ascii=False)
 " || {
   echo "❌ Failed to serialize JSON payload"
@@ -123,14 +127,15 @@ if [[ "$HTTP_CODE" != "200" ]]; then
   exit 1
 fi
 
-# Extract response using python3 (handles both 'response' and 'thinking' fields)
-python3 -c "
-import json, sys
+# Extract response using python3 with env vars (no string injection)
+OLLAMA_RESPONSE="$RESPONSE_FILE" OLLAMA_OUTPUT="$OUTPUT_FILE" \
+  python3 -c "
+import json, sys, os
 
-with open('$RESPONSE_FILE', 'r', encoding='utf-8') as f:
+with open(os.environ['OLLAMA_RESPONSE'], 'r', encoding='utf-8') as f:
     data = json.load(f)
 
-# Handle GLM thinking mode - use 'response' if populated, else 'thinking'
+# Handle GLM thinking mode
 output = ''
 if data.get('response', '').strip():
     output = data['response']
@@ -139,7 +144,7 @@ elif data.get('thinking', '').strip():
 else:
     output = json.dumps(data, indent=2)
 
-with open('$OUTPUT_FILE', 'w', encoding='utf-8') as f:
+with open(os.environ['OLLAMA_OUTPUT'], 'w', encoding='utf-8') as f:
     f.write(output)
 
 print(f'✅ Response received')
@@ -150,8 +155,8 @@ print(f'Length: {len(output)} chars')
   exit 1
 }
 
-# SECURITY: Clean up sensitive files
-rm -f "$CONTEXT_FILE" "${CONTEXT_FILE}.json" "$RESPONSE_FILE"
+# SECURITY: Clean up ALL sensitive files
+rm -f "$CONTEXT_FILE" "${CONTEXT_FILE}.json" "$RESPONSE_FILE" "$PROMPT_FILE"
 echo "🧹 Cleaned up temporary files"
 
 echo "📝 Response saved to $OUTPUT_FILE"

@@ -81,7 +81,7 @@ Write-Output ""
 Write-Output "=== Step 3: Invoke Ollama ==="
 # SECURITY: Use proper JSON serialization instead of string interpolation
 $promptJson = $prompt | ConvertTo-Json -Depth 1 -Compress
-$jsonBody = '{"model":"glm-5.1:cloud","prompt":' + $promptJson + ',"stream":false,"options":{"temperature":0.3,"num_predict":8192}}'
+$jsonBody = '{"model":"glm-5.1:cloud","prompt":' + $promptJson + ',"stream":false,"options":{"temperature":0.3,"num_predict":16384}}'
 $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($jsonBody)
 
 Write-Output "Calling Ollama (1-3 min)... [$($bodyBytes.Length) bytes]"
