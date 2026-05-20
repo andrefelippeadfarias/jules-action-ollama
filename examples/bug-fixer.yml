@@ -6,19 +6,18 @@ on:
 
 jobs:
   fix-bug:
-    if: github.event.label.name == 'bug'
+    # SECURITY: Only allow trusted users to trigger
+    if: ${{ github.event.label.name == 'bug' && contains(fromJSON('["your-username", "trusted-collaborator"]'), github.event.issue.user.login) }}
     runs-on: self-hosted
     permissions:
       contents: write
       pull-requests: write
       issues: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Fix Bug with Ollama
-        # SECURITY: Only allow trusted users to trigger
-        if: ${{ contains(fromJSON('["your-username", "trusted-collaborator"]'), github.event.issue.user.login) }}
-        uses: ./jules-action-ollama
+        uses: andre-farias/jules-action-ollama@v1
         with:
           prompt: |
             Please diagnose and fix the following bug:
@@ -28,15 +27,10 @@ jobs:
             ${{ github.event.issue.body }}
 
             Debugging Process:
-            1. **Analysis** - Review the bug report and identify the root cause
-            2. **Diagnosis** - Trace the issue through the codebase
-            3. **Fix** - Implement a minimal, targeted fix
-            4. **Testing** - Add a regression test that would have caught this bug
-            5. **Documentation** - Add comments explaining the fix
-
-            Please provide:
-            - Clear explanation of the root cause
-            - The complete fix with all necessary changes
-            - Test cases to prevent regression
+            1. Analysis - Review the bug report and identify the root cause
+            2. Diagnosis - Trace the issue through the codebase
+            3. Fix - Implement a minimal, targeted fix
+            4. Testing - Add a regression test
+            5. Documentation - Add comments explaining the fix
           ollama_model: 'glm-5.1:cloud'
           auto_commit: true

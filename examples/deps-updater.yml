@@ -7,31 +7,30 @@ on:
 
 jobs:
   update-deps:
+    if: ${{ contains(fromJSON('["your-username", "trusted-collaborator"]'), github.actor) }}
     runs-on: self-hosted
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Update Dependencies with Ollama
-        uses: ./jules-action-ollama
+        uses: andre-farias/jules-action-ollama@v1
         with:
           prompt: |
             Analyze and update dependencies in this project:
 
-            1. **Identify all dependency files** (package.json, requirements.txt, composer.json, etc.)
-            2. **Check for outdated versions** - compare with latest stable releases
-            3. **Check for known vulnerabilities** - CVEs in current versions
-            4. **Update safely** - increment versions, run tests
-            5. **Report changes** - list what was updated and why
+            1. Identify all dependency files (package.json, requirements.txt, etc.)
+            2. Check for outdated versions
+            3. Check for known vulnerabilities (CVEs)
+            4. Update safely - prefer minor/patch updates
+            5. Report changes - list what was updated and why
 
             Rules:
             - Only update to stable releases (no alpha/beta)
-            - Prefer minor/patch updates over major version jumps
-            - If a major update is needed, note it but don't auto-apply
             - Run existing tests after updating
-            - Group updates by risk level (patch < minor < major)
+            - Group updates by risk level
             - Only create PR if updates are safe and tests pass
           ollama_model: 'glm-5.1:cloud'
           auto_commit: true

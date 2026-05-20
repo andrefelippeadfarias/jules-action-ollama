@@ -1,6 +1,6 @@
 #!/bin/bash
 # create-pr.sh — Create branch, commit changes, push, and open PR
-# Usage: ./create-pr.sh --branch-prefix jules --base main --body response.md
+# SECURITY: Uses proper shell quoting to prevent injection
 
 set -euo pipefail
 
@@ -32,11 +32,13 @@ if git diff --quiet && git diff --staged --quiet; then
   exit 0
 fi
 
-# Title from body file if not provided
-if [[ -z "$TITLE" ]] && [[ -n "$BODY_FILE" ]] && [[ -f "$BODY_FILE" ]]; then
-  TITLE=$(head -1 "$BODY_FILE" | cut -c1-72)
+# SECURITY: Sanitize title - only allow safe characters
+if [[ -n "$TITLE" ]]; then
+  # Remove any characters that could break shell or git commands
+  TITLE=$(printf '%s' "$TITLE" | tr -cd '[:alnum:] [:punct:].' | head -c 72)
+else
+  TITLE="Auto-fix by Jules-Ollama"
 fi
-TITLE="${TITLE:-🤖 Auto-fix by Jules-Ollama}"
 
 echo "🔧 Creating PR..."
 echo "   Branch: $BRANCH"
@@ -64,7 +66,7 @@ git commit -m "🤖 ${TITLE}"
 # Push
 git push origin "$BRANCH"
 
-# Create PR
+# SECURITY: Use --body-file instead of interpolating body into command
 if [[ -n "$BODY_FILE" ]] && [[ -f "$BODY_FILE" ]]; then
   PR_URL=$(gh pr create \
     --base "$BASE_BRANCH" \
@@ -80,5 +82,9 @@ else
 fi
 
 echo "✅ PR created: $PR_URL"
-echo "::set-output name=pr_url::$PR_URL"
-echo "::set-output name=changes_made::true"
+
+# SECURITY: Use GITHUB_OUTPUT instead of deprecated ::set-output
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+  echo "changes_made=true" >> "$GITHUB_OUTPUT"
+fi

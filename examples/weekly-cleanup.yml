@@ -7,50 +7,33 @@ on:
 
 jobs:
   cleanup:
+    if: ${{ contains(fromJSON('["your-username", "trusted-collaborator"]'), github.actor) }}
     runs-on: self-hosted
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 30
 
       - name: Code Cleanup with Ollama
-        uses: ./jules-action-ollama
+        uses: andre-farias/jules-action-ollama@v1
         with:
           prompt: |
             Analyze this codebase and perform maintenance tasks:
 
-            ## Focus Areas
-
-            1. **Dead Code Removal**
-               - Find unused variables, functions, and classes
-               - Remove commented-out code blocks
-               - Clean up unreachable code paths
-
-            2. **Code Duplication**
-               - Identify duplicated code blocks
-               - Refactor into reusable functions
-               - Apply DRY principles
-
-            3. **Complexity Reduction**
-               - Simplify overly complex functions
-               - Break down large functions into smaller pieces
-
-            4. **Naming Improvements**
-               - Find unclear variable/function names
-               - Apply consistent naming conventions
-
-            5. **Code Formatting**
-               - Fix inconsistent indentation
-               - Organize imports
+            1. Dead Code Removal - unused variables, functions, classes
+            2. Code Duplication - refactor into reusable functions
+            3. Complexity Reduction - simplify overly complex functions
+            4. Naming Improvements - unclear variable/function names
+            5. Code Formatting - inconsistent indentation, organize imports
 
             Guidelines:
             - Make incremental, safe refactorings
             - Preserve existing functionality
             - Group related changes logically
-            - Do not open a PR if you have no validated and impactful change.
+            - Do not open a PR if no validated and impactful change exists.
           ollama_model: 'glm-5.1:cloud'
           auto_commit: true
           include_commit_log: true

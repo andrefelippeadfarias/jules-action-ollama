@@ -7,17 +7,19 @@ on:
 
 jobs:
   security-scan:
+    # SECURITY: Only allow trusted users to trigger
+    if: ${{ contains(fromJSON('["your-username", "trusted-collaborator"]'), github.actor) }}
     runs-on: self-hosted
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 30
 
       - name: Security Scan with Ollama
-        uses: ./jules-action-ollama
+        uses: andre-farias/jules-action-ollama@v1
         with:
           prompt: |
             You are a security agent. Scan this codebase for vulnerabilities:
@@ -26,18 +28,11 @@ jobs:
             - Hardcoded secrets, API keys, passwords
             - SQL injection, command injection
             - Missing auth on sensitive endpoints
-            - Insecure CORS configurations
 
             HIGH PRIORITY:
             - XSS, CSRF vulnerabilities
             - Insecure direct object references
             - Missing input validation
-            - Weak cryptography
-
-            MEDIUM:
-            - Missing security headers
-            - Verbose error messages leaking info
-            - Missing rate limiting
 
             Rules:
             - Fix highest severity first
@@ -46,5 +41,5 @@ jobs:
             - Generate a security score (0-100)
             - List all findings with severity, file, line, and fix
           ollama_model: 'glm-5.1:cloud'
-          auto_commit: true
+          auto_commit: false
           include_last_commit: true

@@ -36,10 +36,10 @@ inputs:
     type: boolean
     default: false
   auto_commit:
-    description: 'Automatically commit and create PR if changes are made'
+    description: 'Automatically commit and create PR if changes are made (SECURITY: requires human review)'
     required: false
     type: boolean
-    default: true
+    default: false
   max_files:
     description: 'Maximum number of source files to include in context'
     required: false
@@ -54,7 +54,7 @@ inputs:
     description: 'Maximum tokens for Ollama response'
     required: false
     type: number
-    default: 4096
+    default: 8192
 
 outputs:
   response:
@@ -67,7 +67,7 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 30
 
@@ -101,16 +101,32 @@ runs:
       env:
         MAX_FILES: ${{ inputs.max_files }}
       run: |
-        # Add repo structure
+        # Add repo structure (EXCLUDE sensitive files)
         echo -e '\n\n## Repository Structure\n' >> prompt.txt
-        find . -type f -not -path './.git/*' -not -path './node_modules/*' -not -path './.venv/*' -not -path './dist/*' -not -path './__pycache__/*' | head -100 >> prompt.txt
+        find . -type f -not -path './.git/*' -not -path './node_modules/*' \
+          -not -path './.venv/*' -not -path './dist/*' -not -path './__pycache__/*' \
+          -not -name '.env' -not -name '.env.*' \
+          -not -name '*.key' -not -name '*.pem' -not -name '*.p12' \
+          -not -name '*secret*' -not -name '*credential*' -not -name '*token*' \
+          -not -name '*password*' -not -name '*.jks' \
+          | head -100 >> prompt.txt
 
-        # Add source code files
+        # Add source code files (EXCLUDE sensitive files)
         echo -e '\n\n## Source Code\n' >> prompt.txt
         count=0
-        for f in $(find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" -o -name "*.php" -o -name "*.html" -o -name "*.css" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.sh" -o -name "*.ps1" -o -name "*.sql" -o -name "*.md" \) -not -path './.git/*' -not -path './node_modules/*' -not -path './.venv/*' -not -path './package-lock.json' -not -path './yarn.lock' -not -name "*.min.*" | head -"$MAX_FILES"); do
+        for f in $(find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" \
+          -o -name "*.jsx" -o -name "*.tsx" -o -name "*.php" -o -name "*.html" \
+          -o -name "*.css" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" \
+          -o -name "*.sh" -o -name "*.ps1" -o -name "*.sql" -o -name "*.md" \) \
+          -not -path './.git/*' -not -path './node_modules/*' \
+          -not -path './.venv/*' -not -path './dist/*' \
+          -not -path './__pycache__/*' -not -path './coverage/*' \
+          -not -path './package-lock.json' -not -path './yarn.lock' \
+          -not -name '*.min.*' -not -name '.env' -not -name '.env.*' \
+          -not -name '*.key' -not -name '*.pem' \
+          | head -"$MAX_FILES"); do
           if [ -f "$f" ]; then
-            size=$(wc -c < "$f")
+            size=$(wc -c < "$f" 2>/dev/null || echo 0)
             if [ "$size" -lt 50000 ]; then
               echo -e "\n### $f\n" >> prompt.txt
               echo '```' >> prompt.txt
@@ -131,29 +147,62 @@ runs:
         TEMPERATURE: ${{ inputs.temperature }}
         MAX_TOKENS: ${{ inputs.max_tokens }}
       run: |
-        # Prepare prompt (escape for JSON)
-        PROMPT=$(cat prompt.txt | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' | sed 's/^"//;s/"$//')
+        # SECURITY: Use python3 for proper JSON serialization
+        python3 -c "
+        import json, sys
+        with open('prompt.txt', 'r', encoding='utf-8') as f:
+            prompt = f.read()
+        payload = {
+            'model': '$OLLAMA_MODEL',
+            'prompt': prompt,
+            'stream': False,
+            'options': {
+                'temperature': $TEMPERATURE,
+                'num_predict': $MAX_TOKENS
+            }
+        }
+        with open('payload.json', 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+        " || { echo "Failed to serialize JSON payload"; exit 1; }
 
-        # Call Ollama API
-        RESPONSE=$(curl -s "${OLLAMA_URL}/api/generate" -d "{
-          \"model\": \"${OLLAMA_MODEL}\",
-          \"prompt\": \"${PROMPT}\",
-          \"stream\": false,
-          \"options\": {
-            \"temperature\": ${TEMPERATURE},
-            \"num_predict\": ${MAX_TOKENS}
-          }
-        }")
+        # Call Ollama API with timeout
+        HTTP_CODE=$(curl -s -w "%{http_code}" -o ollama_raw.json --max-time 600 --connect-timeout 30 \
+          "${OLLAMA_URL}/api/generate" \
+          -H "Content-Type: application/json" \
+          -d @payload.json)
 
-        # Extract response
-        echo "$RESPONSE" | python3 -c 'import sys,json; print(json.load(sys.stdin)["response"])' > ollama_response.md
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "❌ Ollama API returned HTTP $HTTP_CODE"
+          cat ollama_raw.json 2>/dev/null
+          exit 1
+        fi
+
+        # Extract response (handles GLM thinking mode)
+        python3 -c "
+        import json, sys
+        with open('ollama_raw.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        output = ''
+        if data.get('response', '').strip():
+            output = data['response']
+        elif data.get('thinking', '').strip():
+            output = data['thinking']
+        else:
+            output = json.dumps(data, indent=2)
+        with open('ollama_response.md', 'w', encoding='utf-8') as f:
+            f.write(output)
+        print(f'Tokens: {data.get(\"eval_count\", \"unknown\")}')
+        print(f'Length: {len(output)} chars')
+        " || { echo "Failed to parse Ollama response"; exit 1; }
 
         # Set output
-        echo "response<<EOF" >> $GITHUB_OUTPUT
+        echo "response<<OEOF" >> $GITHUB_OUTPUT
         cat ollama_response.md >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
+        echo "OEOF" >> $GITHUB_OUTPUT
 
-        echo "Agent response saved to ollama_response.md"
+        # SECURITY: Clean up sensitive files
+        rm -f prompt.txt payload.json ollama_raw.json
+        echo "🧹 Cleaned up temporary files"
 
     - name: Create Pull Request
       if: ${{ inputs.auto_commit == 'true' }}
@@ -164,26 +213,30 @@ runs:
         # Check if there are changes to commit
         git diff --quiet && echo "No changes to commit" && exit 0
 
+        # SECURITY: Sanitize title
+        TITLE=$(head -1 ollama_response.md | tr -cd '[:alnum:] [:punct:].' | head -c 72)
+
         # Create branch
         BRANCH="jules-$(date +%Y%m%d-%H%M%S)"
         git checkout -b "$BRANCH"
 
         # Commit changes
         git add -A
-        TITLE=$(head -1 ollama_response.md | cut -c1-72)
-        git commit -m "🤖 Auto-fix: ${TITLE}"
+        git commit -m "🤒 Auto-fix: ${TITLE}"
 
         # Push
         git push origin "$BRANCH"
 
-        # Create PR
-        BODY=$(cat ollama_response.md)
+        # SECURITY: Use --body-file instead of interpolating body
         PR_URL=$(gh pr create \
           --base "$STARTING_BRANCH" \
           --head "$BRANCH" \
-          --title "🤖 Auto-fix: ${TITLE}" \
-          --body "${BODY}" 2>&1)
+          --title "🤒 ${TITLE}" \
+          --body-file ollama_response.md 2>&1)
 
         echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
         echo "changes_made=true" >> $GITHUB_OUTPUT
-        echo "PR created: ${PR_URL}"
+        echo "✅ PR created: ${PR_URL}"
+
+        # SECURITY: Clean up response file
+        rm -f ollama_response.md

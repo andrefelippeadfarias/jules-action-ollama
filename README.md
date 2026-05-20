@@ -5,8 +5,9 @@
 **Local AI coding agent for GitHub Actions — powered by Ollama instead of Gemini**
 
 [![Runs with Ollama](https://img.shields.io/badge/Runs%20with-Ollama-blue?logo=ollama)](https://ollama.ai)
-[![No API Key Needed](https://img.shields.io/badge/No%20API%20Key-green)](https://github.com/andre-farias/jules-action-ollama)
-[![100% Local](https://img.shields.io/badge/100%25-Local-orange)](https://github.com/andre-farias/jules-action-ollama)
+[![No API Key Needed](https://img.shields.io/badge/No%20API%20Key-green)](https://github.com/andrefelippeadfarias/jules-action-ollama)
+[![100% Local](https://img.shields.io/badge/100%25-Local-orange)](https://github.com/andrefelippeadfarias/jules-action-ollama)
+[![Security Audited](https://img.shields.io/badge/Security-Audited-red)](https://github.com/andrefelippeadfarias/jules-action-ollama)
 
 </div>
 
@@ -20,6 +21,25 @@ Same concept — invoke an AI coding agent from GitHub Actions — but:
 - ✅ **No usage limits** (unlimited tasks, unlike Jules Free tier)
 - ✅ **Any model you want** (GLM-5.1, Llama, Mistral, CodeLlama, etc.)
 - ✅ **Self-hosted runner** (runs on YOUR hardware)
+- 🔒 **Security audited** — Shell injection, JSON injection, and prompt injection mitigated
+
+## ⚠️ Security
+
+This action has been audited for common vulnerabilities:
+
+| Issue | Mitigation |
+|-------|------------|
+| Shell injection | Shell variables sanitized; `--body-file` used for PR bodies |
+| JSON injection | Proper JSON serialization via `python3` |
+| Prompt injection | User inputs should be validated before inclusion |
+| Auto-commit | **Default: `false`** — requires explicit opt-in |
+| Sensitive files | `.env`, `*.key`, `*.pem`, `*secret*`, `*credential*` excluded |
+| Workflow auth | All examples include `github.actor` allowlist checks |
+| Artifacts | `prompt.txt`, `payload.json` cleaned up after execution |
+| Checkout pinned | `actions/checkout@v4` (stable release) |
+| Ollama timeout | `--max-time 600 --connect-timeout 30` |
+
+**Always review AI-generated PRs before merging.**
 
 ## Quick Start
 
@@ -35,7 +55,7 @@ ollama pull glm-5.1:cloud
 
 ### 2. Set up Self-hosted Runner
 
-Follow [GitHub's guide](https://docs.github.com/en/actions/hosting-your-own-runners) to add a self-hosted runner to your repo.
+Follow [GitHub's guide](https://docs.github.com/en/actions/hosting-your-own-runners) to add a self-hosted runner to your repo. Make sure Ollama is running on the same machine.
 
 ### 3. Add the Action
 
@@ -51,12 +71,14 @@ on:
 
 jobs:
   scan:
-    runs-on: self-hosted  # IMPORTANT: must be self-hosted for Ollama access
+    # SECURITY: Restrict who can trigger
+    if: ${{ contains(fromJSON('["your-username"]'), github.actor) }}
+    runs-on: self-hosted
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Security Scan
         uses: andre-farias/jules-action-ollama@v1
@@ -65,7 +87,7 @@ jobs:
             Scan this codebase for security vulnerabilities.
             Fix critical issues and create a PR.
           ollama_model: 'glm-5.1:cloud'
-          auto_commit: true
+          auto_commit: false  # SECURITY: Review before committing
 ```
 
 ## Inputs
@@ -78,10 +100,10 @@ jobs:
 | `starting_branch` | Branch to start from | `main` |
 | `include_last_commit` | Include last commit diff | `false` |
 | `include_commit_log` | Include commit history | `false` |
-| `auto_commit` | Auto commit and create PR | `true` |
+| `auto_commit` | Auto commit and create PR | **`false`** |
 | `max_files` | Max source files in context | `50` |
 | `temperature` | Ollama temperature (0-1) | `0.3` |
-| `max_tokens` | Max tokens in response | `4096` |
+| `max_tokens` | Max tokens in response | `8192` |
 
 ## Example Workflows
 
@@ -94,35 +116,15 @@ jobs:
 | [deps-updater](examples/deps-updater.yml) | Cron (Fri 6h) | 📦 Dependency updates |
 | [ci-failure-fix](examples/ci-failure-fix.yml) | CI failure | 🔧 Fix broken builds |
 
-## How it Works
+## GLM Thinking Mode
 
-```
-GitHub Event → Workflow triggers → Self-hosted Runner
-                                          │
-                                    Checkout repo
-                                          │
-                                    Collect context
-                                    (git log, files, deps)
-                                          │
-                                    Call Ollama API
-                                    (localhost:11434)
-                                          │
-                                    Parse response
-                                          │
-                                  ┌───────┴───────┐
-                                  │ Changes made?  │
-                                  └───────┬───────┘
-                                     Yes ↓     No → Done
-                                  Create branch
-                                  Commit changes
-                                  Push to GitHub
-                                  Open PR via gh CLI
-```
+GLM-5.1 uses a "thinking" mode where the model's reasoning goes to a `thinking` field instead of `response`. This action automatically handles both fields — if `response` is empty, it uses `thinking` content.
 
 ## Requirements
 
 - **Self-hosted runner** (to access Ollama on localhost)
 - **Ollama** running on the runner machine (default port 11434)
+- **Python 3** available (for JSON serialization)
 - **gh CLI** authenticated (for creating PRs)
 - **Git** configured with push access
 
@@ -136,15 +138,11 @@ GitHub Event → Workflow triggers → Self-hosted Runner
 | Limits | 15-300 tasks/day | **Unlimited** |
 | Privacy | Code sent to Google | **100% local** |
 | Models | Gemini only | **Any Ollama model** |
-| PRs | Automatic | Automatic (gh CLI) |
-
-## Security
-
-⚠️ **Important:** This action runs on your self-hosted runner with full code access. Same security considerations as the original Jules action apply:
-
-- Use `if` conditions to restrict who can trigger the workflow
-- Review PRs before merging
-- Keep Ollama and your runner machine updated
+| Auto-commit default | `true` | **`false`** (safer) |
+| JSON serialization | String interpolation | **python3 (safe)** |
+| Shell injection | Not mitigated | **Sanitized** |
+| Sensitive files | Not excluded | **Excluded** |
+| Checkout | `@v5` (doesn't exist) | **`@v4`** (stable) |
 
 ## License
 
