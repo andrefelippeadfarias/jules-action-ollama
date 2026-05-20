@@ -12,52 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Check Ollama is running
+      - name: Run Security Scan
         shell: powershell
         run: |
-          $resp = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -TimeoutSec 10
-          Write-Output "Ollama is running. Models: $($resp.models.name -join ', ')"
-
-      - name: Collect Repository Context
-        shell: powershell
-        run: |
-          $prompt = "You are a security agent. Analyze this repository for vulnerabilities.`n`nCheck for:`n1. Hardcoded secrets, API keys, passwords`n2. SQL injection, XSS, CSRF`n3. Missing authentication`n4. Insecure configurations`n5. Dependency vulnerabilities`n`nGenerate a security score (0-100) and list all findings.`n`n## Repository Structure`n"
-          $files = Get-ChildItem -Recurse -File | Where-Object { $_.FullName -notmatch '\\\.git\\' -and $_.FullName -notmatch '\\node_modules\\' } | Select-Object -First 50
-          foreach ($f in $files) {
-            $prompt += "`n$($f.FullName.Replace($PWD.Path, '.'))"
-          }
-          $prompt += "`n`n## Source Code`n"
-          $sourceFiles = Get-ChildItem -Recurse -File | Where-Object { $_.Extension -match '\.(yaml|yml|md|sh|ps1|json)$' -and $_.FullName -notmatch '\\\.git\\' } | Select-Object -First 20
-          foreach ($f in $sourceFiles) {
-            $relPath = $f.FullName.Replace($PWD.Path, '.')
-            $prompt += "`n`n### $relPath`n"
-            $prompt += "```"
-            $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
-            if ($content) { $prompt += $content }
-            $prompt += "```"
-          }
-          $prompt | Out-File -FilePath prompt.txt -Encoding UTF8
-          Write-Output "Prompt file created"
-
-      - name: Invoke Ollama Agent
-        shell: powershell
-        run: |
-          $promptContent = Get-Content prompt.txt -Raw
-          $body = @{
-            model = "glm-5.1:cloud"
-            prompt = $promptContent
-            stream = $false
-            options = @{
-              temperature = 0.3
-              num_predict = 2048
-            }
-          } | ConvertTo-Json -Depth 5
-          $resp = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 300
-          $resp.response | Out-File -FilePath ollama_response.md -Encoding UTF8
-          Write-Output "Ollama response received. Tokens: $($resp.eval_count)"
-
-      - name: Display Results
-        shell: powershell
-        run: |
-          Write-Output "=== SECURITY SCAN RESULTS ==="
-          Get-Content ollama_response.md
+          .\scripts\test-security-ollama.ps1
