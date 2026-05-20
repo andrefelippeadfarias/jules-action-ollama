@@ -1,0 +1,1424 @@
+﻿You are a security agent. Analyze this repository for vulnerabilities.
+
+Check for:
+1. Hardcoded secrets, API keys, passwords
+2. SQL injection, XSS, CSRF
+3. Missing authentication
+4. Insecure configurations
+5. Dependency vulnerabilities
+
+Generate a security score (0-100) and list all findings.
+
+## Repository Structure
+.\action.yaml
+.\ollama_response.md
+.\prompt.txt
+.\README.md
+.\.github\workflows\test-security.yml
+.\examples\bug-fixer.yml
+.\examples\ci-failure-fix.yml
+.\examples\deps-updater.yml
+.\examples\performance-improver.yml
+.\examples\security-agent.yml
+.\examples\weekly-cleanup.yml
+.\prompts\bugfix.md
+.\prompts\cleanup.md
+.\prompts\performance.md
+.\prompts\security.md
+.\prompts\site-check.md
+.\scripts\collect-context.sh
+.\scripts\create-pr.sh
+.\scripts\invoke-ollama.sh
+.\scripts\test-security-ollama.ps1
+
+## Source Code
+
+### .\action.yaml
+```
+name: 'Jules Action Ollama'
+description: 'Invoke a local Ollama-powered coding agent to perform tasks on your codebase. No API key needed - runs entirely on your machine.'
+author: 'andre-farias'
+branding:
+  icon: 'cpu'
+  color: 'orange'
+
+inputs:
+  prompt:
+    description: 'The task description for the agent to perform'
+    required: true
+    type: string
+  ollama_model:
+    description: 'Ollama model to use (default: glm-5.1:cloud)'
+    required: false
+    type: string
+    default: 'glm-5.1:cloud'
+  ollama_url:
+    description: 'Ollama API URL (default: http://localhost:11434)'
+    required: false
+    type: string
+    default: 'http://localhost:11434'
+  starting_branch:
+    description: 'The branch to start from'
+    required: false
+    type: string
+    default: 'main'
+  include_last_commit:
+    description: 'Include the last commit diff in context'
+    required: false
+    type: boolean
+    default: false
+  include_commit_log:
+    description: 'Include recent commit history in context'
+    required: false
+    type: boolean
+    default: false
+  auto_commit:
+    description: 'Automatically commit and create PR if changes are made'
+    required: false
+    type: boolean
+    default: true
+  max_files:
+    description: 'Maximum number of source files to include in context'
+    required: false
+    type: number
+    default: 50
+  temperature:
+    description: 'Ollama temperature (0.0-1.0, lower = more deterministic)'
+    required: false
+    type: number
+    default: 0.3
+  max_tokens:
+    description: 'Maximum tokens for Ollama response'
+    required: false
+    type: number
+    default: 4096
+
+outputs:
+  response:
+    description: 'The agent response text'
+  changes_made:
+    description: 'Whether changes were committed (true/false)'
+  pr_url:
+    description: 'URL of the created PR (if auto_commit is true)'
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/checkout@v5
+      with:
+        fetch-depth: 30
+
+    - name: Create initial prompt
+      env:
+        USER_PROMPT: ${{ inputs.prompt }}
+      shell: bash
+      run: |
+        echo "$USER_PROMPT" > prompt.txt
+
+    - name: Save last commit content
+      if: ${{ inputs.include_last_commit == 'true' }}
+      shell: bash
+      run: |
+        echo -e '\n\nContent of the latest commit (in the format of `git show`):' >> prompt.txt
+        echo '```' >> prompt.txt
+        git show >> prompt.txt
+        echo '```' >> prompt.txt
+
+    - name: Save git log
+      if: ${{ inputs.include_commit_log == 'true' }}
+      shell: bash
+      run: |
+        echo -e '\n\nLog of the last 20 commits (in the format of `git log --stat`):' >> prompt.txt
+        echo '```' >> prompt.txt
+        git log -20 --stat >> prompt.txt
+        echo '```' >> prompt.txt
+
+    - name: Collect repository context
+      shell: bash
+      env:
+        MAX_FILES: ${{ inputs.max_files }}
+      run: |
+        # Add repo structure
+        echo -e '\n\n## Repository Structure\n' >> prompt.txt
+        find . -type f -not -path './.git/*' -not -path './node_modules/*' -not -path './.venv/*' -not -path './dist/*' -not -path './__pycache__/*' | head -100 >> prompt.txt
+
+        # Add source code files
+        echo -e '\n\n## Source Code\n' >> prompt.txt
+        count=0
+        for f in $(find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" -o -name "*.php" -o -name "*.html" -o -name "*.css" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.sh" -o -name "*.ps1" -o -name "*.sql" -o -name "*.md" \) -not -path './.git/*' -not -path './node_modules/*' -not -path './.venv/*' -not -path './package-lock.json' -not -path './yarn.lock' -not -name "*.min.*" | head -"$MAX_FILES"); do
+          if [ -f "$f" ]; then
+            size=$(wc -c < "$f")
+            if [ "$size" -lt 50000 ]; then
+              echo -e "\n### $f\n" >> prompt.txt
+              echo '```' >> prompt.txt
+              cat "$f" >> prompt.txt
+              echo '```' >> prompt.txt
+              count=$((count + 1))
+            fi
+          fi
+        done
+        echo "Included $count source files in context"
+
+    - name: Invoke Ollama Agent
+      id: ollama
+      shell: bash
+      env:
+        OLLAMA_URL: ${{ inputs.ollama_url }}
+        OLLAMA_MODEL: ${{ inputs.ollama_model }}
+        TEMPERATURE: ${{ inputs.temperature }}
+        MAX_TOKENS: ${{ inputs.max_tokens }}
+      run: |
+        # Prepare prompt (escape for JSON)
+        PROMPT=$(cat prompt.txt | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' | sed 's/^"//;s/"$//')
+
+        # Call Ollama API
+        RESPONSE=$(curl -s "${OLLAMA_URL}/api/generate" -d "{
+          \"model\": \"${OLLAMA_MODEL}\",
+          \"prompt\": \"${PROMPT}\",
+          \"stream\": false,
+          \"options\": {
+            \"temperature\": ${TEMPERATURE},
+            \"num_predict\": ${MAX_TOKENS}
+          }
+        }")
+
+        # Extract response
+        echo "$RESPONSE" | python3 -c 'import sys,json; print(json.load(sys.stdin)["response"])' > ollama_response.md
+
+        # Set output
+        echo "response<<EOF" >> $GITHUB_OUTPUT
+        cat ollama_response.md >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+        echo "Agent response saved to ollama_response.md"
+
+    - name: Create Pull Request
+      if: ${{ inputs.auto_commit == 'true' }}
+      shell: bash
+      env:
+        STARTING_BRANCH: ${{ inputs.starting_branch }}
+      run: |
+        # Check if there are changes to commit
+        git diff --quiet && echo "No changes to commit" && exit 0
+
+        # Create branch
+        BRANCH="jules-$(date +%Y%m%d-%H%M%S)"
+        git checkout -b "$BRANCH"
+
+        # Commit changes
+        git add -A
+        TITLE=$(head -1 ollama_response.md | cut -c1-72)
+        git commit -m "ðŸ¤– Auto-fix: ${TITLE}"
+
+        # Push
+        git push origin "$BRANCH"
+
+        # Create PR
+        BODY=$(cat ollama_response.md)
+        PR_URL=$(gh pr create \
+          --base "$STARTING_BRANCH" \
+          --head "$BRANCH" \
+          --title "ðŸ¤– Auto-fix: ${TITLE}" \
+          --body "${BODY}" 2>&1)
+
+        echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
+        echo "changes_made=true" >> $GITHUB_OUTPUT
+        echo "PR created: ${PR_URL}"
+```
+
+### .\ollama_response.md
+```
+```
+
+### .\README.md
+```
+<div align="center">
+
+# ðŸ”§ Jules Action Ollama
+
+**Local AI coding agent for GitHub Actions â€” powered by Ollama instead of Gemini**
+
+[![Runs with Ollama](https://img.shields.io/badge/Runs%20with-Ollama-blue?logo=ollama)](https://ollama.ai)
+[![No API Key Needed](https://img.shields.io/badge/No%20API%20Key-green)](https://github.com/andre-farias/jules-action-ollama)
+[![100% Local](https://img.shields.io/badge/100%25-Local-orange)](https://github.com/andre-farias/jules-action-ollama)
+
+</div>
+
+## What is this?
+
+A **fork of [google-labs-code/jules-action](https://github.com/google-labs-code/jules-action)** modified to use **[Ollama](https://ollama.ai)** (local AI) instead of the Jules Cloud API (Gemini 3 Pro).
+
+Same concept â€” invoke an AI coding agent from GitHub Actions â€” but:
+- âœ… **No API key needed** (Ollama runs locally)
+- âœ… **No cloud dependency** (your code never leaves your machine)
+- âœ… **No usage limits** (unlimited tasks, unlike Jules Free tier)
+- âœ… **Any model you want** (GLM-5.1, Llama, Mistral, CodeLlama, etc.)
+- âœ… **Self-hosted runner** (runs on YOUR hardware)
+
+## Quick Start
+
+### 1. Install Ollama
+
+```bash
+# macOS/Linux
+curl -fsSL https://ollama.ai/install.sh | sh
+
+# Pull a model
+ollama pull glm-5.1:cloud
+```
+
+### 2. Set up Self-hosted Runner
+
+Follow [GitHub's guide](https://docs.github.com/en/actions/hosting-your-own-runners) to add a self-hosted runner to your repo.
+
+### 3. Add the Action
+
+Create `.github/workflows/security-agent.yml`:
+
+```yaml
+name: Daily Security Scan
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6 AM
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: self-hosted  # IMPORTANT: must be self-hosted for Ollama access
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Security Scan
+        uses: andre-farias/jules-action-ollama@v1
+        with:
+          prompt: |
+            Scan this codebase for security vulnerabilities.
+            Fix critical issues and create a PR.
+          ollama_model: 'glm-5.1:cloud'
+          auto_commit: true
+```
+
+## Inputs
+
+| Input | Description | Default |
+|-------|-------------|---------|
+| `prompt` | **Required.** The task for the agent to perform. | â€” |
+| `ollama_model` | Ollama model to use | `glm-5.1:cloud` |
+| `ollama_url` | Ollama API URL | `http://localhost:11434` |
+| `starting_branch` | Branch to start from | `main` |
+| `include_last_commit` | Include last commit diff | `false` |
+| `include_commit_log` | Include commit history | `false` |
+| `auto_commit` | Auto commit and create PR | `true` |
+| `max_files` | Max source files in context | `50` |
+| `temperature` | Ollama temperature (0-1) | `0.3` |
+| `max_tokens` | Max tokens in response | `4096` |
+
+## Example Workflows
+
+| Workflow | Trigger | Description |
+|----------|---------|-------------|
+| [security-agent](examples/security-agent.yml) | Cron (Mon 6h) | ðŸ”’ Security vulnerability scan |
+| [bug-fixer](examples/bug-fixer.yml) | Issue labeled `bug` | ðŸ› Auto-fix bugs |
+| [weekly-cleanup](examples/weekly-cleanup.yml) | Cron (Sat 3h) | ðŸ§¹ Code cleanup & refactoring |
+| [performance](examples/performance-improver.yml) | Cron (Mon 4h) | âš¡ Performance optimization |
+| [deps-updater](examples/deps-updater.yml) | Cron (Fri 6h) | ðŸ“¦ Dependency updates |
+| [ci-failure-fix](examples/ci-failure-fix.yml) | CI failure | ðŸ”§ Fix broken builds |
+
+## How it Works
+
+```
+GitHub Event â†’ Workflow triggers â†’ Self-hosted Runner
+                                          â”‚
+                                    Checkout repo
+                                          â”‚
+                                    Collect context
+                                    (git log, files, deps)
+                                          â”‚
+                                    Call Ollama API
+                                    (localhost:11434)
+                                          â”‚
+                                    Parse response
+                                          â”‚
+                                  â”Œâ”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”
+                                  â”‚ Changes made?  â”‚
+                                  â””â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”˜
+                                     Yes â†“     No â†’ Done
+                                  Create branch
+                                  Commit changes
+                                  Push to GitHub
+                                  Open PR via gh CLI
+```
+
+## Requirements
+
+- **Self-hosted runner** (to access Ollama on localhost)
+- **Ollama** running on the runner machine (default port 11434)
+- **gh CLI** authenticated (for creating PRs)
+- **Git** configured with push access
+
+## vs Original Jules Action
+
+| Feature | Jules Action (Original) | Jules Action Ollama |
+|---------|------------------------|---------------------|
+| Backend | Gemini 3 Pro (Cloud) | Any Ollama model (Local) |
+| API Key | Required | **Not needed** |
+| Cost | Free: 15/day, Pro: ~$20/mo | **Free** (local) |
+| Limits | 15-300 tasks/day | **Unlimited** |
+| Privacy | Code sent to Google | **100% local** |
+| Models | Gemini only | **Any Ollama model** |
+| PRs | Automatic | Automatic (gh CLI) |
+
+## Security
+
+âš ï¸ **Important:** This action runs on your self-hosted runner with full code access. Same security considerations as the original Jules action apply:
+
+- Use `if` conditions to restrict who can trigger the workflow
+- Review PRs before merging
+- Keep Ollama and your runner machine updated
+
+## License
+
+MIT (same as original jules-action)
+
+## Credits
+
+Forked from [google-labs-code/jules-action](https://github.com/google-labs-code/jules-action) by Google Labs.
+Modified to use Ollama instead of Jules Cloud API.
+```
+
+### .\.github\workflows\test-security.yml
+```
+name: Test Security Scan (Ollama)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-ollama:
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run Security Scan
+        shell: powershell
+        run: |
+          .\scripts\test-security-ollama.ps1
+```
+
+### .\examples\bug-fixer.yml
+```
+name: Auto-Fix Bugs (Ollama)
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  fix-bug:
+    if: github.event.label.name == 'bug'
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fix Bug with Ollama
+        # SECURITY: Only allow trusted users to trigger
+        if: ${{ contains(fromJSON('["your-username", "trusted-collaborator"]'), github.event.issue.user.login) }}
+        uses: ./jules-action-ollama
+        with:
+          prompt: |
+            Please diagnose and fix the following bug:
+
+            ## ${{ github.event.issue.title }}
+
+            ${{ github.event.issue.body }}
+
+            Debugging Process:
+            1. **Analysis** - Review the bug report and identify the root cause
+            2. **Diagnosis** - Trace the issue through the codebase
+            3. **Fix** - Implement a minimal, targeted fix
+            4. **Testing** - Add a regression test that would have caught this bug
+            5. **Documentation** - Add comments explaining the fix
+
+            Please provide:
+            - Clear explanation of the root cause
+            - The complete fix with all necessary changes
+            - Test cases to prevent regression
+          ollama_model: 'glm-5.1:cloud'
+          auto_commit: true
+```
+
+### .\examples\ci-failure-fix.yml
+```
+name: Auto-Fix CI Failures (Ollama)
+
+on:
+  workflow_run:
+    workflows: ["CI"]  # Replace with your CI workflow name
+    types: [completed]
+
+jobs:
+  fix-failure:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+
+      - name: Fix CI Failure with Ollama
+        uses: ./jules-action-ollama
+        with:
+          prompt: |
+            The CI workflow "${{ github.event.workflow_run.name }}" has failed.
+
+            **Branch:** ${{ github.event.workflow_run.head_branch }}
+            **Commit:** ${{ github.event.workflow_run.head_sha }}
+
+            Please:
+            1. Analyze the failure from the workflow run
+            2. Identify the root cause
+            3. Implement a fix
+            4. Ensure the fix would pass CI
+
+            Focus on:
+            - Build errors (missing imports, type errors)
+            - Test failures (broken assertions, flaky tests)
+            - Lint errors (formatting, unused variables)
+            - Configuration issues (wrong env vars, missing deps)
+          ollama_model: 'glm-5.1:cloud'
+          auto_commit: true
+          starting_branch: ${{ github.event.workflow_run.head_branch }}
+          include_last_commit: true
+```
+
+### .\examples\deps-updater.yml
+```
+name: Dependencies Updater (Ollama)
+
+on:
+  schedule:
+    - cron: '0 6 * * 5'  # Every Friday at 6 AM
+  workflow_dispatch:
+
+jobs:
+  update-deps:
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Update Dependencies with Ollama
+        uses: ./jules-action-ollama
+        with:
+          prompt: |
+            Analyze and update dependencies in this project:
+
+            1. **Identify all dependency files** (package.json, requirements.txt, composer.json, etc.)
+            2. **Check for outdated versions** - compare with latest stable releases
+            3. **Check for known vulnerabilities** - CVEs in current versions
+            4. **Update safely** - increment versions, run tests
+            5. **Report changes** - list what was updated and why
+
+            Rules:
+            - Only update to stable releases (no alpha/beta)
+            - Prefer minor/patch updates over major version jumps
+            - If a major update is needed, note it but don't auto-apply
+            - Run existing tests after updating
+            - Group updates by risk level (patch < minor < major)
+            - Only create PR if updates are safe and tests pass
+          ollama_model: 'glm-5.1:cloud'
+          auto_commit: true
+          include_commit_log: true
+```
+
+### .\examples\performance-improver.yml
+```
+name: Performance Improvement Agent (Ollama)
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'  # Every Monday at 4 AM
+  workflow_dispatch:
+
+jobs:
+  optimize:
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Performance Optimization with Ollama
+        uses: ./jules-action-ollama
+        with:
+          prompt: |
+            You are TURBO, a performance optimization agent. Hunt for speed improvements.
+
+            ## What to Look For
+
+            **Frontend:**
+            - Unnecessary re-renders (missing React.memo, useMemo, useCallback)
+            - Large bundles (code splitting opportunities)
+            - Unoptimized images (missing lazy loading)
+            - Missing virtualization for long lists
+            - Synchronous operations blocking main thread
+
+            **Backend:**
+            - N+1 query problems
+            - Missing database indexes
+            - Expensive operations without caching
+            - Missing pagination on large datasets
+            - O(nÂ²) algorithms that could be O(n)
+
+            **General:**
+            - Redundant calculations in loops
+            - Missing early returns
+            - Inefficient data structures
+            - Repeated API calls that could be batched
+
+            ## Process
+            1. ðŸ” PROFILE - Find a clear performance opportunity
+            2. âš¡ SELECT - Pick one that's impactful AND safe (<100 lines)
+            3. ðŸ”§ OPTIMIZE - Implement with comments explaining the win
+            4. âœ… VERIFY - Run tests, measure impact if benchmarks exist
+            5. ðŸŽ PRESENT - Create PR with expected impact
+
+            ## Rules
+            - Only optimize if there's measurable impact
+            - Keep changes under 100 lines
+            - Don't sacrifice readability for micro-gains
+            - Run tests before opening PR
+            - If no clear win exists, don't create a PR
+          ollama_model: 'glm-5.1:cloud'
+          auto_commit: true
+```
+
+### .\examples\security-agent.yml
+```
+name: Daily Security Scan (Ollama)
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6 AM
+  workflow_dispatch:
+
+jobs:
+  security-scan:
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 30
+
+      - name: Security Scan with Ollama
+        uses: ./jules-action-ollama
+        with:
+          prompt: |
+            You are a security agent. Scan this codebase for vulnerabilities:
+
+            CRITICAL (fix immediately):
+            - Hardcoded secrets, API keys, passwords
+            - SQL injection, command injection
+            - Missing auth on sensitive endpoints
+            - Insecure CORS configurations
+
+            HIGH PRIORITY:
+            - XSS, CSRF vulnerabilities
+            - Insecure direct object references
+            - Missing input validation
+            - Weak cryptography
+
+            MEDIUM:
+            - Missing security headers
+            - Verbose error messages leaking info
+            - Missing rate limiting
+
+            Rules:
+            - Fix highest severity first
+            - Keep changes under 100 lines per fix
+            - Add comments explaining security implications
+            - Generate a security score (0-100)
+            - List all findings with severity, file, line, and fix
+          ollama_model: 'glm-5.1:cloud'
+          auto_commit: true
+          include_last_commit: true
+```
+
+### .\examples\weekly-cleanup.yml
+```
+name: Weekly Codebase Cleanup (Ollama)
+
+on:
+  schedule:
+    - cron: '0 3 * * 6'  # Every Saturday at 3 AM
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 30
+
+      - name: Code Cleanup with Ollama
+        uses: ./jules-action-ollama
+        with:
+          prompt: |
+            Analyze this codebase and perform maintenance tasks:
+
+            ## Focus Areas
+
+            1. **Dead Code Removal**
+               - Find unused variables, functions, and classes
+               - Remove commented-out code blocks
+               - Clean up unreachable code paths
+
+            2. **Code Duplication**
+               - Identify duplicated code blocks
+               - Refactor into reusable functions
+               - Apply DRY principles
+
+            3. **Complexity Reduction**
+               - Simplify overly complex functions
+               - Break down large functions into smaller pieces
+
+            4. **Naming Improvements**
+               - Find unclear variable/function names
+               - Apply consistent naming conventions
+
+            5. **Code Formatting**
+               - Fix inconsistent indentation
+               - Organize imports
+
+            Guidelines:
+            - Make incremental, safe refactorings
+            - Preserve existing functionality
+            - Group related changes logically
+            - Do not open a PR if you have no validated and impactful change.
+          ollama_model: 'glm-5.1:cloud'
+          auto_commit: true
+          include_commit_log: true
+```
+
+### .\prompts\bugfix.md
+```
+# Bug Fixer Agent Prompt
+
+You are a debugging agent. Diagnose and fix bugs with precision.
+
+## Debugging Process
+
+### 1. Analysis
+- Read the bug report carefully
+- Identify the expected vs actual behavior
+- Note the severity and impact
+- Understand the context (environment, version, steps to reproduce)
+
+### 2. Diagnosis
+- Trace the issue through the codebase
+- Find the root cause (not just the symptom)
+- Check for related issues in the same area
+- Verify if it's a regression (check git history)
+
+### 3. Fix
+- Implement a minimal, targeted fix
+- Don't over-engineer â€” fix ONLY what's broken
+- Add defensive programming where appropriate
+- Comment non-obvious fix decisions
+
+### 4. Testing
+- Write a regression test that would have caught this bug
+- Verify the fix doesn't break other functionality
+- Test edge cases related to the bug
+- Consider timeout and concurrency scenarios
+
+### 5. Documentation
+- Add comments explaining the fix
+- Update relevant docstrings
+- Note any follow-up improvements
+
+## Output Format
+
+```
+ðŸ› BUG FIX
+
+**Issue:** [title]
+**Root Cause:** [explanation]
+**Severity:** [CRITICAL|HIGH|MEDIUM|LOW]
+**Files Changed:** [list]
+
+### Fix
+[description of what was changed and why]
+
+### Test
+[regression test added]
+
+### Follow-up (if any)
+[suggested improvements that were out of scope]
+```
+```
+
+### .\prompts\cleanup.md
+```
+# Cleanup Agent Prompt
+
+You are a code quality agent. Clean up technical debt and improve maintainability.
+
+## Focus Areas
+
+1. **Dead Code Removal**
+   - Unused variables, functions, and classes
+   - Commented-out code blocks
+   - Unreachable code paths
+   - Empty catch blocks
+   - Unused imports
+
+2. **Code Duplication (DRY)**
+   - Identical or near-identical code blocks
+   - Repeated patterns that could be extracted
+   - Copy-paste with minor variations
+   - Similar error handling patterns
+
+3. **Complexity Reduction**
+   - Functions longer than 50 lines
+   - Deep nesting (more than 3 levels)
+   - Complex conditional logic
+   - God objects / god functions
+
+4. **Naming Improvements**
+   - Single-letter variables (except loop counters)
+   - Unclear abbreviations
+   - Inconsistent naming conventions
+   - Boolean variables without is/has/can prefix
+
+5. **Code Formatting**
+   - Inconsistent indentation
+   - Disorganized imports
+   - Missing or inconsistent spacing
+   - Lines over 120 characters
+
+6. **Type Safety**
+   - Missing type annotations
+   - `any` types (TypeScript)
+   - Missing return types
+   - Implicit type conversions
+
+## Rules
+- Make incremental, safe refactorings
+- Preserve existing functionality
+- Group related changes logically
+- Don't change public API contracts
+- Run tests after each change
+- Don't open a PR if no validated and impactful change exists
+```
+
+### .\prompts\performance.md
+```
+# Performance Agent Prompt
+
+You are TURBO, a performance optimization agent. Hunt for speed improvements.
+
+## What to Look For
+
+### Frontend
+- Unnecessary re-renders (missing React.memo, useMemo, useCallback)
+- Large bundles (code splitting opportunities)
+- Unoptimized images (missing lazy loading)
+- Missing virtualization for long lists
+- Synchronous operations blocking main thread
+
+### Backend
+- N+1 query problems
+- Missing database indexes
+- Expensive operations without caching
+- Missing pagination on large datasets
+- O(nÂ²) algorithms that could be O(n)
+
+### General
+- Redundant calculations in loops
+- Missing early returns
+- Inefficient data structures
+- Repeated API calls that could be batched
+- Unnecessary deep clones or copies
+
+## Process
+
+1. ðŸ” **PROFILE** â€” Find a clear performance opportunity
+2. âš¡ **SELECT** â€” Pick one that's impactful AND safe (<100 lines)
+3. ðŸ”§ **OPTIMIZE** â€” Implement with comments explaining the win
+4. âœ… **VERIFY** â€” Run tests, measure impact if benchmarks exist
+5. ðŸŽ **PRESENT** â€” Create PR with expected impact
+
+## Rules
+- Only optimize if there's measurable impact
+- Measure before/after if benchmarks exist
+- Keep changes under 100 lines
+- Don't sacrifice readability for micro-gains
+- Run tests before opening PR
+- If no clear win exists, don't create a PR
+```
+
+### .\prompts\security.md
+```
+# Security Agent Prompt
+
+You are a security-focused coding agent. Your job is to find and fix vulnerabilities in code.
+
+## Severity Levels
+
+### CRITICAL (fix immediately)
+- Hardcoded secrets, API keys, passwords, tokens
+- SQL injection (unparameterized queries)
+- Command injection (shell escapes, unsanitized input)
+- Missing authentication on sensitive endpoints
+- Insecure CORS (wildcard origins with credentials)
+- Path traversal vulnerabilities
+
+### HIGH PRIORITY
+- XSS (cross-site scripting, unsanitized output)
+- CSRF (missing tokens on state-changing requests)
+- Insecure direct object references
+- Missing input validation
+- Weak cryptography (MD5, SHA1 for passwords)
+- Insecure deserialization
+
+### MEDIUM
+- Missing security headers (CSP, HSTS, X-Frame-Options)
+- Verbose error messages leaking internal info
+- Missing rate limiting
+- Insecure cookie settings (no HttpOnly/Secure flags)
+- Open redirect vulnerabilities
+
+### LOW
+- Information disclosure in comments
+- Missing Content-Type headers
+- Mixed content (HTTP resources on HTTPS pages)
+
+## Process
+
+1. **Scan** â€” Identify all vulnerabilities, categorize by severity
+2. **Prioritize** â€” Fix CRITICAL first, then HIGH, then MEDIUM
+3. **Fix** â€” Implement minimal, targeted fixes
+4. **Test** â€” Verify fixes don't break functionality
+5. **Score** â€” Generate security score (0-100)
+
+## Output Format
+
+```
+ðŸ”’ SECURITY SCAN RESULTS
+
+Score: XX/100
+
+### CRITICAL (N found)
+- [CRIT-1] Description | File:Line | Fix: ...
+
+### HIGH (N found)
+- [HIGH-1] Description | File:Line | Fix: ...
+
+### MEDIUM (N found)
+- [MED-1] Description | File:Line | Fix: ...
+
+### Actions (priority order)
+1. ...
+2. ...
+```
+```
+
+### .\prompts\site-check.md
+```
+# Site Check Agent Prompt
+
+You are a website quality agent. Audit websites for SEO, accessibility, performance, and security.
+
+## What to Check
+
+### SEO (Search Engine Optimization)
+- Meta tags (title, description, robots)
+- Structured data (Schema.org: Hotel, LocalBusiness, Review)
+- Sitemap.xml existence and validity
+- Robots.txt existence and correctness
+- Heading hierarchy (h1 > h2 > h3)
+- Image alt texts
+- Canonical URLs
+- Open Graph tags
+- URL structure (clean, readable)
+
+### Accessibility (WCAG 2.1)
+- Color contrast ratios (minimum 4.5:1)
+- Keyboard navigation
+- ARIA labels and roles
+- Form labels and error messages
+- Skip navigation links
+- Focus indicators
+- Screen reader compatibility
+
+### Performance
+- Page load time (target < 3s)
+- Largest Contentful Paint (target < 2.5s)
+- Cumulative Layout Shift (target < 0.1)
+- Image optimization (WebP, lazy loading, responsive)
+- Minification (CSS, JS, HTML)
+- Caching headers
+- Bundle size analysis
+
+### Security
+- HTTPS everywhere
+- Security headers (CSP, HSTS, X-Frame-Options)
+- CORS configuration
+- Cookie flags (HttpOnly, Secure, SameSite)
+- No sensitive info in client-side code
+
+### Mobile
+- Viewport meta tag
+- Touch targets (minimum 44x44px)
+- Responsive design
+- Font sizes (minimum 16px body)
+- No horizontal scroll
+
+## Output Format
+
+```
+ðŸ¨ SITE AUDIT RESULTS
+
+Overall Score: XX/100
+
+### SEO (XX/100)
+- âœ… [Good finding]
+- âŒ [Issue] | Impact: HIGH/MED/LOW | Fix: [suggestion]
+
+### Accessibility (XX/100)
+- âœ… [Good finding]
+- âŒ [Issue] | Fix: [suggestion]
+
+### Performance (XX/100)
+- Metrics: LCP Xs, CLS X, FCP Xs
+- âŒ [Issue] | Fix: [suggestion]
+
+### Security (XX/100)
+- âœ… [Good finding]
+- âŒ [Issue] | Fix: [suggestion]
+
+### Mobile (XX/100)
+- âŒ [Issue] | Fix: [suggestion]
+
+### Priority Actions (top 5)
+1. ...
+2. ...
+```
+```
+
+### .\scripts\collect-context.sh
+```
+#!/bin/bash
+# collect-context.sh â€” Collect repository context for Ollama prompt
+# Usage: ./collect-context.sh [--max-files 50] [--max-size 50000] [--output context.md]
+
+set -euo pipefail
+
+# Defaults
+MAX_FILES=50
+MAX_SIZE=50000
+OUTPUT="context.md"
+
+# Parse args
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --max-files) MAX_FILES="$2"; shift 2 ;;
+    --max-size) MAX_SIZE="$2"; shift 2 ;;
+    --output) OUTPUT="$2"; shift 2 ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+
+echo "ðŸ“‚ Collecting repository context..."
+
+# Start fresh
+> "$OUTPUT"
+
+# 1. Repository structure
+echo "## Repository Structure" >> "$OUTPUT"
+echo "" >> "$OUTPUT"
+echo '```' >> "$OUTPUT"
+find . -type f -not -path './.git/*' -not -path './node_modules/*' \
+  -not -path './.venv/*' -not -path './dist/*' \
+  -not -path './__pycache__/*' -not -path './coverage/*' \
+  -not -path './vendor/*' -not -path './.next/*' \
+  | sort | head -200 >> "$OUTPUT"
+echo '```' >> "$OUTPUT"
+echo "" >> "$OUTPUT"
+
+# 2. Git info (if available)
+if git rev-parse --is-inside-work-tree &>/dev/null; then
+  echo "## Git Information" >> "$OUTPUT"
+  echo "" >> "$OUTPUT"
+  echo "Current branch: $(git branch --show-current)" >> "$OUTPUT"
+  echo "Last commit: $(git log -1 --oneline)" >> "$OUTPUT"
+  echo "Total commits: $(git rev-list --count HEAD)" >> "$OUTPUT"
+  echo "" >> "$OUTPUT"
+
+  # Git log (last 10)
+  echo "### Recent Commits" >> "$OUTPUT"
+  echo '```' >> "$OUTPUT"
+  git log -10 --oneline --decorate >> "$OUTPUT"
+  echo '```' >> "$OUTPUT"
+  echo "" >> "$OUTPUT"
+fi
+
+# 3. Dependencies (common files)
+echo "## Dependencies" >> "$OUTPUT"
+echo "" >> "$OUTPUT"
+for depfile in "package.json" "requirements.txt" "composer.json" "Cargo.toml" "go.mod" "pom.xml" "Gemfile" "pyproject.toml"; do
+  if [[ -f "$depfile" ]]; then
+    echo "### $depfile" >> "$OUTPUT"
+    echo '```' >> "$OUTPUT"
+    head -50 "$depfile" >> "$OUTPUT"
+    echo '```' >> "$OUTPUT"
+    echo "" >> "$OUTPUT"
+  fi
+done
+
+# 4. Source code files
+echo "## Source Code" >> "$OUTPUT"
+echo "" >> "$OUTPUT"
+
+count=0
+for f in $(find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" \
+  -o -name "*.jsx" -o -name "*.tsx" -o -name "*.php" -o -name "*.html" \
+  -o -name "*.css" -o -name "*.yaml" -o -name "*.yml" \
+  -o -name "*.sh" -o -name "*.ps1" -o -name "*.sql" \) \
+  -not -path './.git/*' -not -path './node_modules/*' \
+  -not -path './.venv/*' -not -path './dist/*' \
+  -not -path './__pycache__/*' -not -path './coverage/*' \
+  -not -path './vendor/*' -not -path './.next/*' \
+  -not -name "*.min.*" -not -name "*.lock" \
+  | sort | head -"$MAX_FILES"); do
+  if [[ -f "$f" ]]; then
+    size=$(wc -c < "$f" 2>/dev/null || echo 0)
+    if [[ "$size" -lt "$MAX_SIZE" ]]; then
+      # Remove leading ./
+      relpath="${f#./}"
+      echo "### $relpath" >> "$OUTPUT"
+      echo '```' >> "$OUTPUT"
+      cat "$f" >> "$OUTPUT"
+      echo '```' >> "$OUTPUT"
+      echo "" >> "$OUTPUT"
+      count=$((count + 1))
+    fi
+  fi
+done
+
+echo "âœ… Context collected: $count files, $(wc -c < "$OUTPUT") bytes"
+echo "ðŸ“ Saved to $OUTPUT"
+```
+
+### .\scripts\create-pr.sh
+```
+#!/bin/bash
+# create-pr.sh â€” Create branch, commit changes, push, and open PR
+# Usage: ./create-pr.sh --branch-prefix jules --base main --body response.md
+
+set -euo pipefail
+
+# Defaults
+BRANCH_PREFIX="jules"
+BASE_BRANCH="main"
+BODY_FILE=""
+TITLE=""
+DRY_RUN=false
+
+# Parse args
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --branch-prefix) BRANCH_PREFIX="$2"; shift 2 ;;
+    --base) BASE_BRANCH="$2"; shift 2 ;;
+    --body) BODY_FILE="$2"; shift 2 ;;
+    --title) TITLE="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+
+# Generate branch name
+BRANCH="${BRANCH_PREFIX}-$(date +%Y%m%d-%H%M%S)"
+
+# Check if there are changes
+if git diff --quiet && git diff --staged --quiet; then
+  echo "â„¹ï¸ No changes to commit. Skipping PR creation."
+  exit 0
+fi
+
+# Title from body file if not provided
+if [[ -z "$TITLE" ]] && [[ -n "$BODY_FILE" ]] && [[ -f "$BODY_FILE" ]]; then
+  TITLE=$(head -1 "$BODY_FILE" | cut -c1-72)
+fi
+TITLE="${TITLE:-ðŸ¤– Auto-fix by Jules-Ollama}"
+
+echo "ðŸ”§ Creating PR..."
+echo "   Branch: $BRANCH"
+echo "   Base: $BASE_BRANCH"
+echo "   Title: $TITLE"
+
+if [[ "$DRY_RUN" == true ]]; then
+  echo "ðŸƒ Dry run - would create:"
+  echo "   git checkout -b $BRANCH"
+  echo "   git add -A"
+  echo "   git commit -m 'ðŸ¤– $TITLE'"
+  echo "   git push origin $BRANCH"
+  echo "   gh pr create --base $BASE_BRANCH --head $BRANCH --title 'ðŸ¤– $TITLE'"
+  git diff --stat
+  exit 0
+fi
+
+# Create branch
+git checkout -b "$BRANCH"
+
+# Stage and commit
+git add -A
+git commit -m "ðŸ¤– ${TITLE}"
+
+# Push
+git push origin "$BRANCH"
+
+# Create PR
+if [[ -n "$BODY_FILE" ]] && [[ -f "$BODY_FILE" ]]; then
+  PR_URL=$(gh pr create \
+    --base "$BASE_BRANCH" \
+    --head "$BRANCH" \
+    --title "ðŸ¤– ${TITLE}" \
+    --body-file "$BODY_FILE" 2>&1)
+else
+  PR_URL=$(gh pr create \
+    --base "$BASE_BRANCH" \
+    --head "$BRANCH" \
+    --title "ðŸ¤– ${TITLE}" \
+    --body "Automated fix by Jules-Ollama agent." 2>&1)
+fi
+
+echo "âœ… PR created: $PR_URL"
+echo "::set-output name=pr_url::$PR_URL"
+echo "::set-output name=changes_made::true"
+```
+
+### .\scripts\invoke-ollama.sh
+```
+#!/bin/bash
+# invoke-ollama.sh â€” Call local Ollama API with prompt and context
+# Usage: ./invoke-ollama.sh --prompt prompt.txt --model glm-5.1:cloud --output response.md
+
+set -euo pipefail
+
+# Defaults
+OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
+MODEL="${OLLAMA_MODEL:-glm-5.1:cloud}"
+TEMPERATURE="${OLLAMA_TEMPERATURE:-0.3}"
+MAX_TOKENS="${OLLAMA_MAX_TOKENS:-4096}"
+PROMPT_FILE=""
+OUTPUT_FILE="ollama_response.md"
+CONTEXT_FILE="context.md"
+
+# Parse args
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --prompt) PROMPT_FILE="$2"; shift 2 ;;
+    --model) MODEL="$2"; shift 2 ;;
+    --url) OLLAMA_URL="$2"; shift 2 ;;
+    --temperature) TEMPERATURE="$2"; shift 2 ;;
+    --max-tokens) MAX_TOKENS="$2"; shift 2 ;;
+    --output) OUTPUT_FILE="$2"; shift 2 ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+
+if [[ -z "$PROMPT_FILE" ]] || [[ ! -f "$PROMPT_FILE" ]]; then
+  echo "Error: --prompt <file> is required"
+  exit 1
+fi
+
+echo "ðŸ”§ Invoking Ollama..."
+echo "   Model: $MODEL"
+echo "   URL: $OLLAMA_URL"
+echo "   Temperature: $TEMPERATURE"
+echo "   Max tokens: $MAX_TOKENS"
+
+# Build context
+cat "$PROMPT_FILE" > "$CONTEXT_FILE"
+
+# Add repo structure if in a git repo
+if git rev-parse --is-inside-work-tree &>/dev/null; then
+  echo -e "\n\n## Repository Structure\n" >> "$CONTEXT_FILE"
+  find . -type f -not -path './.git/*' -not -path './node_modules/*' \
+    -not -path './.venv/*' -not -path './dist/*' \
+    -not -path './__pycache__/*' -not -path './coverage/*' \
+    | head -100 >> "$CONTEXT_FILE"
+
+  # Add relevant source files (limit to 50, max 50KB each)
+  echo -e "\n\n## Source Code\n" >> "$CONTEXT_FILE"
+  count=0
+  for f in $(find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" \
+    -o -name "*.jsx" -o -name "*.tsx" -o -name "*.php" -o -name "*.html" \
+    -o -name "*.css" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" \
+    -o -name "*.sh" -o -name "*.ps1" -o -name "*.sql" \) \
+    -not -path './.git/*' -not -path './node_modules/*' \
+    -not -path './package-lock.json' -not -path './yarn.lock' \
+    -not -name "*.min.*" | head -50); do
+    if [[ -f "$f" ]]; then
+      size=$(wc -c < "$f" 2>/dev/null || echo 0)
+      if [[ "$size" -lt 50000 ]]; then
+        echo -e "\n### $f\n" >> "$CONTEXT_FILE"
+        echo '```' >> "$CONTEXT_FILE"
+        cat "$f" >> "$CONTEXT_FILE"
+        echo '```' >> "$CONTEXT_FILE"
+        count=$((count + 1))
+      fi
+    fi
+  done
+  echo "Included $count source files in context"
+fi
+
+# Escape prompt for JSON
+PROMPT_JSON=$(python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' < "$CONTEXT_FILE" | sed 's/^"//;s/"$//')
+
+# Call Ollama API
+echo "ðŸ“¡ Calling Ollama API..."
+RESPONSE=$(curl -s --max-time 300 "${OLLAMA_URL}/api/generate" -d "{
+  \"model\": \"${MODEL}\",
+  \"prompt\": \"${PROMPT_JSON}\",
+  \"stream\": false,
+  \"options\": {
+    \"temperature\": ${TEMPERATURE},
+    \"num_predict\": ${MAX_TOKENS}
+  }
+}")
+
+# Check for errors
+if echo "$RESPONSE" | python3 -c 'import sys,json; data=json.load(sys.stdin); sys.exit(1 if "error" in data else 0)' 2>/dev/null; then
+  echo "âœ… Response received"
+else
+  echo "âŒ Error from Ollama:"
+  echo "$RESPONSE" | python3 -c 'import sys,json; data=json.load(sys.stdin); print(data.get("error","Unknown error"))' 2>/dev/null || echo "$RESPONSE"
+  exit 1
+fi
+
+# Extract response text
+echo "$RESPONSE" | python3 -c 'import sys,json; print(json.load(sys.stdin)["response"])' > "$OUTPUT_FILE"
+
+# Stats
+TOKENS=$(echo "$RESPONSE" | python3 -c 'import sys,json; data=json.load(sys.stdin); print(data.get("eval_count","unknown"))' 2>/dev/null || echo "unknown")
+DURATION=$(echo "$RESPONSE" | python3 -c 'import sys,json; data=json.load(sys.stdin); print(round(data.get("total_duration",0)/1e9,1))' 2>/dev/null || echo "unknown")
+
+echo "ðŸ“Š Stats: $TOKENS tokens in ${DURATION}s"
+echo "ðŸ“ Response saved to $OUTPUT_FILE"
+```
+
+### .\scripts\test-security-ollama.ps1
+```
+# test-security-ollama.ps1 â€” Security scan using local Ollama
+$ErrorActionPreference = "Stop"
+
+Write-Output "=== Step 1: Check Ollama ==="
+try {
+    $resp = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -TimeoutSec 10
+    Write-Output "Ollama running. Models: $($resp.models.name -join ', ')"
+} catch {
+    Write-Output "ERROR: Ollama not running"
+    exit 1
+}
+
+Write-Output ""
+Write-Output "=== Step 2: Collect Context ==="
+$codeBlock = [string][char]96 + [string][char]96 + [string][char]96
+
+$sb = New-Object System.Text.StringBuilder
+[void]$sb.AppendLine("You are a security agent. Analyze this repository for vulnerabilities.")
+[void]$sb.AppendLine("")
+[void]$sb.AppendLine("Check for:")
+[void]$sb.AppendLine("1. Hardcoded secrets, API keys, passwords")
+[void]$sb.AppendLine("2. SQL injection, XSS, CSRF")
+[void]$sb.AppendLine("3. Missing authentication")
+[void]$sb.AppendLine("4. Insecure configurations")
+[void]$sb.AppendLine("5. Dependency vulnerabilities")
+[void]$sb.AppendLine("")
+[void]$sb.AppendLine("Generate a security score (0-100) and list all findings.")
+[void]$sb.AppendLine("")
+[void]$sb.AppendLine("## Repository Structure")
+
+$files = Get-ChildItem -Recurse -File | Where-Object { $_.FullName -notlike "*\.git\*" -and $_.FullName -notlike "*node_modules*" } | Select-Object -First 50
+foreach ($f in $files) {
+    [void]$sb.AppendLine($f.FullName.Replace($PWD.Path, "."))
+}
+
+[void]$sb.AppendLine("")
+[void]$sb.AppendLine("## Source Code")
+
+$sourceFiles = Get-ChildItem -Recurse -File | Where-Object { $_.Extension -match "\.(yaml|yml|md|sh|ps1|json)$" -and $_.FullName -notlike "*\.git\*" } | Select-Object -First 20
+foreach ($f in $sourceFiles) {
+    $relPath = $f.FullName.Replace($PWD.Path, ".")
+    [void]$sb.AppendLine("")
+    [void]$sb.AppendLine("### $relPath")
+    [void]$sb.AppendLine($codeBlock)
+    $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+    if ($content) { [void]$sb.AppendLine($content) }
+    [void]$sb.AppendLine($codeBlock)
+}
+
+$prompt = $sb.ToString()
+[System.IO.File]::WriteAllText("$PWD\prompt.txt", $prompt, [System.Text.Encoding]::UTF8)
+Write-Output "Prompt created: $($prompt.Length) chars"
+
+Write-Output ""
+Write-Output "=== Step 3: Invoke Ollama ==="
+# Build JSON manually to avoid PS5.1 encoding issues
+$promptJson = $prompt | ConvertTo-Json -Depth 1 -Compress
+$jsonBody = '{"model":"glm-5.1:cloud","prompt":' + $promptJson + ',"stream":false,"options":{"temperature":0.3,"num_predict":8192}}'
+$bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($jsonBody)
+
+Write-Output "Calling Ollama (1-3 min)... [$($bodyBytes.Length) bytes]"
+$resp = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -ContentType "application/json; charset=utf-8" -Body $bodyBytes -TimeoutSec 600 -OutFile "$env:TEMP\ollama_result.json"
+
+# Extract response - handle both 'response' and 'thinking' fields
+$rawJson = Get-Content "$env:TEMP\ollama_result.json" -Raw
+$result = $rawJson | ConvertFrom-Json
+$output = ""
+if ($result.response -and $result.response.Trim().Length -gt 0) {
+    $output = $result.response
+} elseif ($result.thinking -and $result.thinking.Trim().Length -gt 0) {
+    $output = $result.thinking
+}
+
+if ($output.Length -eq 0) {
+    # Fallback: save raw JSON
+    $output = $rawJson
+}
+
+[System.IO.File]::WriteAllText("$PWD\ollama_response.md", $output, [System.Text.Encoding]::UTF8)
+Write-Output "Response received! Tokens: $($result.eval_count), Length: $($output.Length) chars"
+
+Write-Output ""
+Write-Output "=== SECURITY SCAN RESULTS ==="
+Get-Content ollama_response.md
+```
