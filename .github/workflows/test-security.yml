@@ -1,0 +1,88 @@
+name: Test Security Scan (Ollama)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-ollama:
+    runs-on: andre-pc
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check Ollama is running
+        shell: pwsh
+        run: |
+          try {
+            $resp = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -TimeoutSec 10
+            Write-Output "✅ Ollama is running. Models: $($resp.models.name -join ', ')"
+          } catch {
+            Write-Output "❌ Ollama is not running. Starting..."
+            Start-Process "ollama" -ArgumentList "serve" -WindowStyle Hidden
+            Start-Sleep -Seconds 10
+            $resp = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -TimeoutSec 10
+            Write-Output "✅ Ollama started. Models: $($resp.models.name -join ', ')"
+          }
+
+      - name: Collect Repository Context
+        shell: bash
+        run: |
+          # Create prompt
+          cat > prompt.txt << 'PROMPT'
+          You are a security agent. Analyze this repository for vulnerabilities.
+
+          Check for:
+          1. Hardcoded secrets, API keys, passwords
+          2. SQL injection, XSS, CSRF
+          3. Missing authentication
+          4. Insecure configurations
+          5. Dependency vulnerabilities
+
+          Generate a security score (0-100) and list all findings.
+          PROMPT
+
+          # Add repo structure
+          echo -e "\n\n## Repository Structure\n" >> prompt.txt
+          find . -type f -not -path './.git/*' -not -path './node_modules/*' | head -50 >> prompt.txt
+
+          # Add source files
+          echo -e "\n\n## Source Code\n" >> prompt.txt
+          for f in $(find . -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.md" -o -name "*.sh" \) -not -path './.git/*' | head -20); do
+            if [ -f "$f" ]; then
+              echo -e "\n### $f\n" >> prompt.txt
+              echo '```' >> prompt.txt
+              cat "$f" >> prompt.txt
+              echo '```' >> prompt.txt
+            fi
+          done
+
+          echo "Prompt file created: $(wc -l < prompt.txt) lines"
+
+      - name: Invoke Ollama Agent
+        shell: pwsh
+        run: |
+          $prompt = Get-Content prompt.txt -Raw
+          $body = @{
+            model = "glm-5.1:cloud"
+            prompt = $prompt
+            stream = $false
+            options = @{
+              temperature = 0.3
+              num_predict = 2048
+            }
+          } | ConvertTo-Json -Depth 5
+
+          $resp = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 300
+
+          $resp.response | Out-File -FilePath ollama_response.md -Encoding UTF8
+          Write-Output "✅ Ollama response received"
+          Write-Output "Model: $($resp.model)"
+          Write-Output "Tokens: $($resp.eval_count)"
+
+      - name: Display Results
+        shell: bash
+        run: |
+          echo "=== SECURITY SCAN RESULTS ==="
+          cat ollama_response.md
