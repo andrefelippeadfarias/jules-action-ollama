@@ -5,7 +5,7 @@ on:
 
 jobs:
   test-ollama:
-    runs-on: andre-pc
+    runs-on: self-hosted
     permissions:
       contents: write
       pull-requests: write
