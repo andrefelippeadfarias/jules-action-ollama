@@ -1,0 +1,42 @@
+name: Auto-Fix Bugs (Ollama)
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  fix-bug:
+    if: github.event.label.name == 'bug'
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fix Bug with Ollama
+        # SECURITY: Only allow trusted users to trigger
+        if: ${{ contains(fromJSON('["your-username", "trusted-collaborator"]'), github.event.issue.user.login) }}
+        uses: ./jules-action-ollama
+        with:
+          prompt: |
+            Please diagnose and fix the following bug:
+
+            ## ${{ github.event.issue.title }}
+
+            ${{ github.event.issue.body }}
+
+            Debugging Process:
+            1. **Analysis** - Review the bug report and identify the root cause
+            2. **Diagnosis** - Trace the issue through the codebase
+            3. **Fix** - Implement a minimal, targeted fix
+            4. **Testing** - Add a regression test that would have caught this bug
+            5. **Documentation** - Add comments explaining the fix
+
+            Please provide:
+            - Clear explanation of the root cause
+            - The complete fix with all necessary changes
+            - Test cases to prevent regression
+          ollama_model: 'glm-5.1:cloud'
+          auto_commit: true

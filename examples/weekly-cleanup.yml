@@ -1,0 +1,56 @@
+name: Weekly Codebase Cleanup (Ollama)
+
+on:
+  schedule:
+    - cron: '0 3 * * 6'  # Every Saturday at 3 AM
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 30
+
+      - name: Code Cleanup with Ollama
+        uses: ./jules-action-ollama
+        with:
+          prompt: |
+            Analyze this codebase and perform maintenance tasks:
+
+            ## Focus Areas
+
+            1. **Dead Code Removal**
+               - Find unused variables, functions, and classes
+               - Remove commented-out code blocks
+               - Clean up unreachable code paths
+
+            2. **Code Duplication**
+               - Identify duplicated code blocks
+               - Refactor into reusable functions
+               - Apply DRY principles
+
+            3. **Complexity Reduction**
+               - Simplify overly complex functions
+               - Break down large functions into smaller pieces
+
+            4. **Naming Improvements**
+               - Find unclear variable/function names
+               - Apply consistent naming conventions
+
+            5. **Code Formatting**
+               - Fix inconsistent indentation
+               - Organize imports
+
+            Guidelines:
+            - Make incremental, safe refactorings
+            - Preserve existing functionality
+            - Group related changes logically
+            - Do not open a PR if you have no validated and impactful change.
+          ollama_model: 'glm-5.1:cloud'
+          auto_commit: true
+          include_commit_log: true

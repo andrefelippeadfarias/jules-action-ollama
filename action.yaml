@@ -1,0 +1,189 @@
+name: 'Jules Action Ollama'
+description: 'Invoke a local Ollama-powered coding agent to perform tasks on your codebase. No API key needed - runs entirely on your machine.'
+author: 'andre-farias'
+branding:
+  icon: 'cpu'
+  color: 'orange'
+
+inputs:
+  prompt:
+    description: 'The task description for the agent to perform'
+    required: true
+    type: string
+  ollama_model:
+    description: 'Ollama model to use (default: glm-5.1:cloud)'
+    required: false
+    type: string
+    default: 'glm-5.1:cloud'
+  ollama_url:
+    description: 'Ollama API URL (default: http://localhost:11434)'
+    required: false
+    type: string
+    default: 'http://localhost:11434'
+  starting_branch:
+    description: 'The branch to start from'
+    required: false
+    type: string
+    default: 'main'
+  include_last_commit:
+    description: 'Include the last commit diff in context'
+    required: false
+    type: boolean
+    default: false
+  include_commit_log:
+    description: 'Include recent commit history in context'
+    required: false
+    type: boolean
+    default: false
+  auto_commit:
+    description: 'Automatically commit and create PR if changes are made'
+    required: false
+    type: boolean
+    default: true
+  max_files:
+    description: 'Maximum number of source files to include in context'
+    required: false
+    type: number
+    default: 50
+  temperature:
+    description: 'Ollama temperature (0.0-1.0, lower = more deterministic)'
+    required: false
+    type: number
+    default: 0.3
+  max_tokens:
+    description: 'Maximum tokens for Ollama response'
+    required: false
+    type: number
+    default: 4096
+
+outputs:
+  response:
+    description: 'The agent response text'
+  changes_made:
+    description: 'Whether changes were committed (true/false)'
+  pr_url:
+    description: 'URL of the created PR (if auto_commit is true)'
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/checkout@v5
+      with:
+        fetch-depth: 30
+
+    - name: Create initial prompt
+      env:
+        USER_PROMPT: ${{ inputs.prompt }}
+      shell: bash
+      run: |
+        echo "$USER_PROMPT" > prompt.txt
+
+    - name: Save last commit content
+      if: ${{ inputs.include_last_commit == 'true' }}
+      shell: bash
+      run: |
+        echo -e '\n\nContent of the latest commit (in the format of `git show`):' >> prompt.txt
+        echo '```' >> prompt.txt
+        git show >> prompt.txt
+        echo '```' >> prompt.txt
+
+    - name: Save git log
+      if: ${{ inputs.include_commit_log == 'true' }}
+      shell: bash
+      run: |
+        echo -e '\n\nLog of the last 20 commits (in the format of `git log --stat`):' >> prompt.txt
+        echo '```' >> prompt.txt
+        git log -20 --stat >> prompt.txt
+        echo '```' >> prompt.txt
+
+    - name: Collect repository context
+      shell: bash
+      env:
+        MAX_FILES: ${{ inputs.max_files }}
+      run: |
+        # Add repo structure
+        echo -e '\n\n## Repository Structure\n' >> prompt.txt
+        find . -type f -not -path './.git/*' -not -path './node_modules/*' -not -path './.venv/*' -not -path './dist/*' -not -path './__pycache__/*' | head -100 >> prompt.txt
+
+        # Add source code files
+        echo -e '\n\n## Source Code\n' >> prompt.txt
+        count=0
+        for f in $(find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" -o -name "*.php" -o -name "*.html" -o -name "*.css" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.sh" -o -name "*.ps1" -o -name "*.sql" -o -name "*.md" \) -not -path './.git/*' -not -path './node_modules/*' -not -path './.venv/*' -not -path './package-lock.json' -not -path './yarn.lock' -not -name "*.min.*" | head -"$MAX_FILES"); do
+          if [ -f "$f" ]; then
+            size=$(wc -c < "$f")
+            if [ "$size" -lt 50000 ]; then
+              echo -e "\n### $f\n" >> prompt.txt
+              echo '```' >> prompt.txt
+              cat "$f" >> prompt.txt
+              echo '```' >> prompt.txt
+              count=$((count + 1))
+            fi
+          fi
+        done
+        echo "Included $count source files in context"
+
+    - name: Invoke Ollama Agent
+      id: ollama
+      shell: bash
+      env:
+        OLLAMA_URL: ${{ inputs.ollama_url }}
+        OLLAMA_MODEL: ${{ inputs.ollama_model }}
+        TEMPERATURE: ${{ inputs.temperature }}
+        MAX_TOKENS: ${{ inputs.max_tokens }}
+      run: |
+        # Prepare prompt (escape for JSON)
+        PROMPT=$(cat prompt.txt | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' | sed 's/^"//;s/"$//')
+
+        # Call Ollama API
+        RESPONSE=$(curl -s "${OLLAMA_URL}/api/generate" -d "{
+          \"model\": \"${OLLAMA_MODEL}\",
+          \"prompt\": \"${PROMPT}\",
+          \"stream\": false,
+          \"options\": {
+            \"temperature\": ${TEMPERATURE},
+            \"num_predict\": ${MAX_TOKENS}
+          }
+        }")
+
+        # Extract response
+        echo "$RESPONSE" | python3 -c 'import sys,json; print(json.load(sys.stdin)["response"])' > ollama_response.md
+
+        # Set output
+        echo "response<<EOF" >> $GITHUB_OUTPUT
+        cat ollama_response.md >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+        echo "Agent response saved to ollama_response.md"
+
+    - name: Create Pull Request
+      if: ${{ inputs.auto_commit == 'true' }}
+      shell: bash
+      env:
+        STARTING_BRANCH: ${{ inputs.starting_branch }}
+      run: |
+        # Check if there are changes to commit
+        git diff --quiet && echo "No changes to commit" && exit 0
+
+        # Create branch
+        BRANCH="jules-$(date +%Y%m%d-%H%M%S)"
+        git checkout -b "$BRANCH"
+
+        # Commit changes
+        git add -A
+        TITLE=$(head -1 ollama_response.md | cut -c1-72)
+        git commit -m "🤖 Auto-fix: ${TITLE}"
+
+        # Push
+        git push origin "$BRANCH"
+
+        # Create PR
+        BODY=$(cat ollama_response.md)
+        PR_URL=$(gh pr create \
+          --base "$STARTING_BRANCH" \
+          --head "$BRANCH" \
+          --title "🤖 Auto-fix: ${TITLE}" \
+          --body "${BODY}" 2>&1)
+
+        echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
+        echo "changes_made=true" >> $GITHUB_OUTPUT
+        echo "PR created: ${PR_URL}"
