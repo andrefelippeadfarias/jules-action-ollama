@@ -17,9 +17,9 @@ jobs:
         run: |
           try {
             $resp = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -TimeoutSec 10
-            Write-Output "✅ Ollama is running. Models: $($resp.models.name -join ', ')"
+            Write-Output "Ollama is running. Models: $($resp.models.name -join ', ')"
           } catch {
-            Write-Output "❌ Ollama is not running on localhost:11434"
+            Write-Output "Ollama is not running on localhost:11434"
             Write-Output "Error: $($_.Exception.Message)"
             exit 1
           }
@@ -42,23 +42,25 @@ jobs:
 
           # Add repo structure
           $prompt += "`n`n## Repository Structure`n"
-          $files = Get-ChildItem -Recurse -File -NotMatch '\.git|node_modules' | Select-Object -First 50
+          $files = Get-ChildItem -Recurse -File | Where-Object { $_.FullName -notmatch '\\\.git\\' -and $_.FullName -notmatch '\\node_modules\\' } | Select-Object -First 50
           foreach ($f in $files) {
             $prompt += "`n$($f.FullName.Replace($PWD.Path, '.'))"
           }
 
           # Add source files
           $prompt += "`n`n## Source Code`n"
-          $sourceFiles = Get-ChildItem -Recurse -File -Include *.yaml,*.yml,*.md,*.sh,*.ps1,*.json -NotMatch '\.git|node_modules' | Select-Object -First 20
+          $sourceFiles = Get-ChildItem -Recurse -File | Where-Object { $_.Extension -match '\.(yaml|yml|md|sh|ps1|json)$' -and $_.FullName -notmatch '\\\.git\\' } | Select-Object -First 20
           foreach ($f in $sourceFiles) {
             $relPath = $f.FullName.Replace($PWD.Path, '.')
-            $prompt += "`n`n### $relPath`n``````"
-            $prompt += Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
-            $prompt += "``````"
+            $prompt += "`n`n### $relPath`n"
+            $prompt += "```"
+            $content = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+            if ($content) { $prompt += $content }
+            $prompt += "```"
           }
 
           $prompt | Out-File -FilePath prompt.txt -Encoding UTF8
-          Write-Output "Prompt file created: $(prompt.txt)"
+          Write-Output "Prompt file created"
 
       - name: Invoke Ollama Agent
         shell: powershell
@@ -77,7 +79,7 @@ jobs:
           $resp = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 300
 
           $resp.response | Out-File -FilePath ollama_response.md -Encoding UTF8
-          Write-Output "✅ Ollama response received"
+          Write-Output "Ollama response received"
           Write-Output "Tokens: $($resp.eval_count)"
 
       - name: Display Results
