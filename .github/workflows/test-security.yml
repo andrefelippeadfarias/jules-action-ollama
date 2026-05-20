@@ -13,21 +13,21 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Check Ollama is running
-        shell: bash
+        shell: powershell
         run: |
-          if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-            echo "✅ Ollama is running"
-            curl -s http://localhost:11434/api/tags | python3 -c "import sys,json; data=json.load(sys.stdin); print('Models:', ', '.join([m['name'] for m in data.get('models',[])]))"
-          else
-            echo "❌ Ollama is not running. Please start Ollama first."
+          try {
+            $resp = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -Method Get -TimeoutSec 10
+            Write-Output "✅ Ollama is running. Models: $($resp.models.name -join ', ')"
+          } catch {
+            Write-Output "❌ Ollama is not running on localhost:11434"
+            Write-Output "Error: $($_.Exception.Message)"
             exit 1
-          fi
+          }
 
       - name: Collect Repository Context
-        shell: bash
+        shell: powershell
         run: |
-          # Create prompt
-          cat > prompt.txt << 'PROMPT'
+          $prompt = @"
           You are a security agent. Analyze this repository for vulnerabilities.
 
           Check for:
@@ -38,40 +38,50 @@ jobs:
           5. Dependency vulnerabilities
 
           Generate a security score (0-100) and list all findings.
-          PROMPT
+          "@
 
           # Add repo structure
-          echo -e "\n\n## Repository Structure\n" >> prompt.txt
-          find . -type f -not -path './.git/*' -not -path './node_modules/*' | head -50 >> prompt.txt
+          $prompt += "`n`n## Repository Structure`n"
+          $files = Get-ChildItem -Recurse -File -NotMatch '\.git|node_modules' | Select-Object -First 50
+          foreach ($f in $files) {
+            $prompt += "`n$($f.FullName.Replace($PWD.Path, '.'))"
+          }
 
           # Add source files
-          echo -e "\n\n## Source Code\n" >> prompt.txt
-          for f in $(find . -type f \( -name "*.yaml" -o -name "*.yml" -o -name "*.md" -o -name "*.sh" \) -not -path './.git/*' | head -20); do
-            if [ -f "$f" ]; then
-              echo -e "\n### $f\n" >> prompt.txt
-              echo '```' >> prompt.txt
-              cat "$f" >> prompt.txt
-              echo '```' >> prompt.txt
-            fi
-          done
+          $prompt += "`n`n## Source Code`n"
+          $sourceFiles = Get-ChildItem -Recurse -File -Include *.yaml,*.yml,*.md,*.sh,*.ps1,*.json -NotMatch '\.git|node_modules' | Select-Object -First 20
+          foreach ($f in $sourceFiles) {
+            $relPath = $f.FullName.Replace($PWD.Path, '.')
+            $prompt += "`n`n### $relPath`n``````"
+            $prompt += Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+            $prompt += "``````"
+          }
 
-          echo "Prompt file created: $(wc -l < prompt.txt) lines"
+          $prompt | Out-File -FilePath prompt.txt -Encoding UTF8
+          Write-Output "Prompt file created: $(prompt.txt)"
 
       - name: Invoke Ollama Agent
-        shell: bash
+        shell: powershell
         run: |
-          PROMPT=$(cat prompt.txt)
-          
-          RESPONSE=$(curl -s --max-time 300 "http://localhost:11434/api/generate" -d "${PROMPT}" \
-            -H "Content-Type: application/json" \
-            -d "{\"model\":\"glm-5.1:cloud\",\"prompt\":$(python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' < prompt.txt),\"stream\":false,\"options\":{\"temperature\":0.3,\"num_predict\":2048}}")
-          
-          echo "$RESPONSE" | python3 -c 'import sys,json; print(json.load(sys.stdin)["response"])' > ollama_response.md
-          echo "✅ Ollama response received"
-          echo "Tokens: $(echo "$RESPONSE" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("eval_count","unknown"))' 2>/dev/null || echo 'unknown')"
+          $promptContent = Get-Content prompt.txt -Raw
+          $body = @{
+            model = "glm-5.1:cloud"
+            prompt = $promptContent
+            stream = $false
+            options = @{
+              temperature = 0.3
+              num_predict = 2048
+            }
+          } | ConvertTo-Json -Depth 5
+
+          $resp = Invoke-RestMethod -Uri "http://localhost:11434/api/generate" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 300
+
+          $resp.response | Out-File -FilePath ollama_response.md -Encoding UTF8
+          Write-Output "✅ Ollama response received"
+          Write-Output "Tokens: $($resp.eval_count)"
 
       - name: Display Results
-        shell: bash
+        shell: powershell
         run: |
-          echo "=== SECURITY SCAN RESULTS ==="
-          cat ollama_response.md
+          Write-Output "=== SECURITY SCAN RESULTS ==="
+          Get-Content ollama_response.md
