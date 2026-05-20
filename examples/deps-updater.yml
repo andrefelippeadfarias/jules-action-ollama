@@ -1,4 +1,4 @@
-name: Dependencies Updater (Ollama)
+﻿name: Dependencies Updater (Ollama)
 
 on:
   schedule:
@@ -33,5 +33,5 @@ jobs:
             - Group updates by risk level
             - Only create PR if updates are safe and tests pass
           ollama_model: 'glm-5.1:cloud'
-          auto_commit: true
+          auto_commit: false  # SECURITY: Review AI output before committing
           include_commit_log: true

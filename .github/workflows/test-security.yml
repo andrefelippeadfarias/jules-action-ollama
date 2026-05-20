@@ -5,12 +5,14 @@ on:
 
 jobs:
   test-ollama:
+    # SECURITY: Restrict who can trigger
+    if: ${{ contains(fromJSON('["andrefelippeadfarias"]'), github.actor) }}
     runs-on: self-hosted
     permissions:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Run Security Scan
         shell: powershell

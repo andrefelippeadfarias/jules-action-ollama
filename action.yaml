@@ -147,18 +147,18 @@ runs:
         TEMPERATURE: ${{ inputs.temperature }}
         MAX_TOKENS: ${{ inputs.max_tokens }}
       run: |
-        # SECURITY: Use python3 for proper JSON serialization
+        # SECURITY: Use python3 for proper JSON serialization - pass params via env vars, NOT string interpolation
         python3 -c "
-        import json, sys
+        import json, sys, os
         with open('prompt.txt', 'r', encoding='utf-8') as f:
             prompt = f.read()
         payload = {
-            'model': '$OLLAMA_MODEL',
+            'model': os.environ.get('OLLAMA_MODEL', 'glm-5.1:cloud'),
             'prompt': prompt,
             'stream': False,
             'options': {
-                'temperature': $TEMPERATURE,
-                'num_predict': $MAX_TOKENS
+                'temperature': float(os.environ.get('TEMPERATURE', '0.3')),
+                'num_predict': int(os.environ.get('MAX_TOKENS', '8192'))
             }
         }
         with open('payload.json', 'w', encoding='utf-8') as f:
@@ -214,7 +214,8 @@ runs:
         git diff --quiet && echo "No changes to commit" && exit 0
 
         # SECURITY: Sanitize title
-        TITLE=$(head -1 ollama_response.md | tr -cd '[:alnum:] [:punct:].' | head -c 72)
+        # SECURITY: Sanitize title - only allow safe characters
+        TITLE=$(head -1 ollama_response.md | tr -cd '[:alnum:] _-.' | head -c 72)
 
         # Create branch
         BRANCH="jules-$(date +%Y%m%d-%H%M%S)"
@@ -238,5 +239,5 @@ runs:
         echo "changes_made=true" >> $GITHUB_OUTPUT
         echo "✅ PR created: ${PR_URL}"
 
-        # SECURITY: Clean up response file
-        rm -f ollama_response.md
+        # SECURITY: Clean up ALL temporary files including response
+        rm -f ollama_response.md prompt.txt payload.json

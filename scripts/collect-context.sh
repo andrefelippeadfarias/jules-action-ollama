@@ -1,5 +1,6 @@
 #!/bin/bash
 # collect-context.sh — Collect repository context for Ollama prompt
+# SECURITY: Excludes sensitive files (.env, *.key, *.pem, etc.)
 # Usage: ./collect-context.sh [--max-files 50] [--max-size 50000] [--output context.md]
 
 set -euo pipefail
@@ -24,7 +25,7 @@ echo "📂 Collecting repository context..."
 # Start fresh
 > "$OUTPUT"
 
-# 1. Repository structure
+# 1. Repository structure (EXCLUDE sensitive files)
 echo "## Repository Structure" >> "$OUTPUT"
 echo "" >> "$OUTPUT"
 echo '```' >> "$OUTPUT"
@@ -32,6 +33,10 @@ find . -type f -not -path './.git/*' -not -path './node_modules/*' \
   -not -path './.venv/*' -not -path './dist/*' \
   -not -path './__pycache__/*' -not -path './coverage/*' \
   -not -path './vendor/*' -not -path './.next/*' \
+  -not -name '.env' -not -name '.env.*' \
+  -not -name '*.key' -not -name '*.pem' -not -name '*.p12' -not -name '*.jks' \
+  -not -name '*secret*' -not -name '*credential*' -not -name '*token*' \
+  -not -name '*password*' \
   | sort | head -200 >> "$OUTPUT"
 echo '```' >> "$OUTPUT"
 echo "" >> "$OUTPUT"
@@ -45,7 +50,6 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
   echo "Total commits: $(git rev-list --count HEAD)" >> "$OUTPUT"
   echo "" >> "$OUTPUT"
 
-  # Git log (last 10)
   echo "### Recent Commits" >> "$OUTPUT"
   echo '```' >> "$OUTPUT"
   git log -10 --oneline --decorate >> "$OUTPUT"
@@ -66,7 +70,7 @@ for depfile in "package.json" "requirements.txt" "composer.json" "Cargo.toml" "g
   fi
 done
 
-# 4. Source code files
+# 4. Source code files (EXCLUDE sensitive files)
 echo "## Source Code" >> "$OUTPUT"
 echo "" >> "$OUTPUT"
 
@@ -79,12 +83,15 @@ for f in $(find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" \
   -not -path './.venv/*' -not -path './dist/*' \
   -not -path './__pycache__/*' -not -path './coverage/*' \
   -not -path './vendor/*' -not -path './.next/*' \
-  -not -name "*.min.*" -not -name "*.lock" \
+  -not -name '*.min.*' -not -name '*.lock' \
+  -not -name '.env' -not -name '.env.*' \
+  -not -name '*.key' -not -name '*.pem' -not -name '*.p12' -not -name '*.jks' \
+  -not -name '*secret*' -not -name '*credential*' -not -name '*token*' \
+  -not -name '*password*' \
   | sort | head -"$MAX_FILES"); do
   if [[ -f "$f" ]]; then
     size=$(wc -c < "$f" 2>/dev/null || echo 0)
     if [[ "$size" -lt "$MAX_SIZE" ]]; then
-      # Remove leading ./
       relpath="${f#./}"
       echo "### $relpath" >> "$OUTPUT"
       echo '```' >> "$OUTPUT"

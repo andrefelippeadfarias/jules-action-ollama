@@ -1,4 +1,4 @@
-name: Weekly Codebase Cleanup (Ollama)
+﻿name: Weekly Codebase Cleanup (Ollama)
 
 on:
   schedule:
@@ -35,5 +35,5 @@ jobs:
             - Group related changes logically
             - Do not open a PR if no validated and impactful change exists.
           ollama_model: 'glm-5.1:cloud'
-          auto_commit: true
+          auto_commit: false  # SECURITY: Review AI output before committing
           include_commit_log: true

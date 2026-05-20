@@ -1,4 +1,4 @@
-name: Daily Security Scan (Ollama)
+﻿name: Daily Security Scan (Ollama)
 
 on:
   schedule:

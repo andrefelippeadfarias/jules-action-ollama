@@ -1,4 +1,4 @@
-name: Auto-Fix Bugs (Ollama)
+﻿name: Auto-Fix Bugs (Ollama)
 
 on:
   issues:
@@ -33,4 +33,4 @@ jobs:
             4. Testing - Add a regression test
             5. Documentation - Add comments explaining the fix
           ollama_model: 'glm-5.1:cloud'
-          auto_commit: true
+          auto_commit: false  # SECURITY: Review AI output before committing
